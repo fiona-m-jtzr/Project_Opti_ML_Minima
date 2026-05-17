@@ -4,7 +4,6 @@ Investigating the loss landscape / minima shape of different optimizers.
 """
 
 import argparse
-import os
 import time
 import json
 import math
@@ -258,9 +257,9 @@ def parse_args():
                    help="Global random seed")
 
     # --- Training ---
-    p.add_argument("--epochs",      type=int,   default=200)
+    p.add_argument("--epochs",      type=int,   default=20)
     p.add_argument("--batch_size",  type=int,   default=128)
-    p.add_argument("--num_workers", type=int,   default=4)
+    p.add_argument("--num_workers", type=int,   default=0)
     p.add_argument("--no_augment",  action="store_true",
                    help="Disable standard data augmentation")
     p.add_argument("--amp",         action="store_true",
@@ -291,7 +290,7 @@ def parse_args():
                    help="Base optimizer for SAM")
 
     # --- Scheduler ---
-    p.add_argument("--scheduler", type=str, default="cosine",
+    p.add_argument("--scheduler", type=str, default="none",
                    choices=["none", "step", "cosine", "warmup_cosine", "cyclic"],
                    help="LR scheduler")
     p.add_argument("--lr_milestones", type=int, nargs="+", default=None,
