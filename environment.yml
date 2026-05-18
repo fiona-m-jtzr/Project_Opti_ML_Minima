@@ -1,0 +1,9 @@
+name: Opt_ML
+channels:
+  - defaults
+dependencies:
+  - python=3.13
+  - numpy
+  - jupyter
+  - matplotlib
+prefix: /opt/anaconda3/envs/Opt_ML
