@@ -8,6 +8,7 @@ import time
 import json
 import math
 from pathlib import Path
+import wandb
 
 import torch
 import torch.nn as nn
@@ -257,7 +258,7 @@ def parse_args():
                    help="Global random seed")
 
     # --- Training ---
-    p.add_argument("--epochs",      type=int,   default=20)
+    p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=0)
     p.add_argument("--no_augment",  action="store_true",
@@ -341,6 +342,12 @@ def main():
     # Save config
     with open(out_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
+    
+    wandb.init(
+        project="OptiML_Minima",
+        name=args.run_name,
+        config=vars(args),
+    )
 
     # Device
     device = torch.device(
@@ -369,8 +376,8 @@ def main():
     # Optimizer & scheduler
     optimizer = build_optimizer(model, args)
     scheduler = build_scheduler(optimizer, args, steps_per_epoch=len(train_loader))
-    scaler    = torch.cuda.amp.GradScaler() if (args.amp and device.type == "cuda") else None
-
+    scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
+    
     # Optionally resume
     start_epoch = 0
     best_acc    = 0.0
@@ -384,6 +391,9 @@ def main():
         best_acc    = ckpt.get("best_acc", 0.0)
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
+    
+    patience = 20
+    epochs_no_improve = 0
 
     # ---------- Training loop ----------
     step_scheduler_per_batch = args.scheduler in ("warmup_cosine", "cyclic")
@@ -417,6 +427,7 @@ def main():
             "time_s":     round(elapsed,    2),
         }
         history.append(record)
+        wandb.log(record) 
 
         print(
             f"Epoch {epoch+1:>3}/{args.epochs} | "
@@ -430,6 +441,7 @@ def main():
         is_best = test_acc > best_acc
         if is_best:
             best_acc = test_acc
+            epochs_no_improve = 0
             torch.save({
                 "epoch": epoch,
                 "model": model.state_dict(),
@@ -438,6 +450,11 @@ def main():
                 "history": history,
                 "args": vars(args),
             }, out_dir / "best.pt")
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print(f"\nEarly stopping triggered after {epoch+1} epochs.")
+                break
 
         # Periodic checkpoint
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
@@ -456,6 +473,15 @@ def main():
 
     print(f"\n✓ Training complete. Best test accuracy: {best_acc:.2f}%")
     print(f"  Outputs saved to: {out_dir}\n")
+    artifact = wandb.Artifact(
+        name=f"model-{args.run_name}",
+        type="model",
+        metadata={"best_test_acc": best_acc},
+    )
+    artifact.add_file(str(out_dir / "best.pt"))
+    wandb.log_artifact(artifact)
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
