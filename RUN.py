@@ -13,7 +13,7 @@ import wandb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 import torchvision
 import torchvision.transforms as transforms
 
@@ -25,35 +25,32 @@ from models.resnet20 import ResNet20
 # Data loading
 # ---------------------------------------------------------------------------
 
-def get_dataloaders(data_dir, batch_size, num_workers=4, augment=True):
-    """Return CIFAR-10 train and test DataLoaders."""
+def get_dataloaders(data_dir, batch_size, num_workers=4, val_fraction=0.1):
     normalize = transforms.Normalize(
         mean=(0.4914, 0.4822, 0.4465),
         std =(0.2023, 0.1994, 0.2010),
     )
+    transform = transforms.Compose([transforms.ToTensor(), normalize])
 
-    if augment:
-        train_transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ])
-    else:
-        train_transform = transforms.Compose([transforms.ToTensor(), normalize])
+    train_full = torchvision.datasets.CIFAR10(root=data_dir, train=True,
+                     download=True, transform=transform)
+    test_set   = torchvision.datasets.CIFAR10(root=data_dir, train=False,
+                     download=True, transform=transform)
 
-    test_transform = transforms.Compose([transforms.ToTensor(), normalize])
-
-    train_set = torchvision.datasets.CIFAR10(
-        root=data_dir, train=True,  download=True, transform=train_transform)
-    test_set  = torchvision.datasets.CIFAR10(
-        root=data_dir, train=False, download=True, transform=test_transform)
+    val_size   = int(len(train_full) * val_fraction)
+    train_size = len(train_full) - val_size
+    train_set, val_set = random_split(
+        train_full, [train_size, val_size],
+        generator=torch.Generator().manual_seed(42),
+    )
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(val_set,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
     test_loader  = DataLoader(test_set,  batch_size=batch_size, shuffle=False,
                               num_workers=num_workers, pin_memory=True)
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +258,6 @@ def parse_args():
     p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=0)
-    p.add_argument("--no_augment",  action="store_true",
-                   help="Disable standard data augmentation")
     p.add_argument("--amp",         action="store_true",
                    help="Use automatic mixed precision (AMP / fp16)")
     p.add_argument("--label_smoothing", type=float, default=0.0,
@@ -361,9 +356,8 @@ def main():
     print(f"{'='*60}\n")
 
     # Data
-    train_loader, test_loader = get_dataloaders(
+    train_loader, val_loader, test_loader = get_dataloaders(
         args.data_dir, args.batch_size, args.num_workers,
-        augment=not args.no_augment,
     )
 
     # Model
@@ -408,6 +402,7 @@ def main():
         if scheduler and not step_scheduler_per_batch:
             scheduler.step()
 
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         test_loss, test_acc = evaluate(model, test_loader, criterion, device)
 
         elapsed = time.time() - t0
@@ -422,6 +417,8 @@ def main():
             "lr": current_lr,
             "train_loss": round(train_loss, 6),
             "train_acc":  round(train_acc,  4),
+            "val_loss":  round(val_loss,  6),
+            "val_acc":   round(val_acc,   4),
             "test_loss":  round(test_loss,  6),
             "test_acc":   round(test_acc,   4),
             "time_s":     round(elapsed,    2),
@@ -433,14 +430,15 @@ def main():
             f"Epoch {epoch+1:>3}/{args.epochs} | "
             f"LR {current_lr:.2e} | "
             f"Train loss {train_loss:.4f}  acc {train_acc:5.2f}% | "
+            f"Validation loss {val_loss:.4f}  acc {val_acc:5.2f}% | "
             f"Test loss {test_loss:.4f}  acc {test_acc:5.2f}% | "
             f"{elapsed:.1f}s"
         )
 
         # Save best checkpoint
-        is_best = test_acc > best_acc
+        is_best = val_acc > best_acc
         if is_best:
-            best_acc = test_acc
+            best_acc = val_acc
             epochs_no_improve = 0
             torch.save({
                 "epoch": epoch,
@@ -471,12 +469,12 @@ def main():
         with open(out_dir / "history.json", "w") as f:
             json.dump(history, f, indent=2)
 
-    print(f"\n✓ Training complete. Best test accuracy: {best_acc:.2f}%")
+    print(f"\n✓ Training complete. Best val accuracy: {best_acc:.2f}%")
     print(f"  Outputs saved to: {out_dir}\n")
     artifact = wandb.Artifact(
         name=f"model-{args.run_name}",
         type="model",
-        metadata={"best_test_acc": best_acc},
+        metadata={"best_val_acc": best_acc},
     )
     artifact.add_file(str(out_dir / "best.pt"))
     wandb.log_artifact(artifact)
