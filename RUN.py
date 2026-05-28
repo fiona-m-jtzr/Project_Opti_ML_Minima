@@ -157,6 +157,8 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
     total_loss, correct, total = 0.0, 0, 0
     is_sam = isinstance(optimizer, SAM)
 
+    grad_norm_sum = 0.0 
+
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
 
@@ -169,6 +171,13 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
                     loss = criterion(outputs, targets)
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
+    
+                grad_norm = sum(
+                    p.grad.norm().item() ** 2
+                    for p in model.parameters()
+                    if p.grad is not None
+                ) ** 0.5
+                
                 optimizer.first_step(zero_grad=True)
 
                 # Step 2: forward + backward at perturbed weights
@@ -182,10 +191,18 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
                 loss.backward()
+
+                grad_norm = sum(
+                    p.grad.norm().item() ** 2
+                    for p in model.parameters()
+                    if p.grad is not None
+                ) ** 0.5
+
                 optimizer.first_step(zero_grad=True)
 
                 loss = criterion(model(inputs), targets)
                 loss.backward()
+
                 optimizer.second_step(zero_grad=True)
         else:
             # --- Standard single-step update ---
@@ -195,12 +212,27 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
                     outputs = model(inputs)
                     loss = criterion(outputs, targets)
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                
+                grad_norm = sum(                       
+                    p.grad.norm().item() ** 2
+                    for p in model.parameters()
+                    if p.grad is not None
+                ) ** 0.5
+
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
                 loss.backward()
+
+                grad_norm = sum(
+                    p.grad.norm().item() ** 2
+                    for p in model.parameters()
+                    if p.grad is not None
+                ) ** 0.5
+
                 optimizer.step()
 
         total_loss += loss.item() * inputs.size(0)
@@ -208,7 +240,10 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
         correct += predicted.eq(targets).sum().item()
         total   += inputs.size(0)
 
-    return total_loss / total, 100.0 * correct / total
+        grad_norm_sum += grad_norm
+
+
+    return total_loss / total, 100.0 * correct / total, grad_norm_sum / len(loader)
 
 
 @torch.no_grad()
@@ -233,6 +268,16 @@ def evaluate(model, loader, criterion, device):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+# ---------------------------------------------------------------------------
+# Weight norm
+# ---------------------------------------------------------------------------
+
+def compute_weight_norm(model):
+    return sum(
+        p.norm().item() ** 2
+        for p in model.parameters()
+        if p.requires_grad
+    ) ** 0.5
 
 # ---------------------------------------------------------------------------
 # Argument parser
@@ -375,6 +420,7 @@ def main():
     # Optionally resume
     start_epoch = 0
     best_acc    = 0.0
+    best_loss = float("inf")
     history     = []
 
     if args.resume:
@@ -383,6 +429,7 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = ckpt["epoch"] + 1
         best_acc    = ckpt.get("best_acc", 0.0)
+        best_loss = ckpt.get("best_loss", float("inf"))
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
     
@@ -395,7 +442,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
 
-        train_loss, train_acc = train_epoch(
+        train_loss, train_acc, grad_norm = train_epoch(
             model, train_loader, optimizer, criterion, device, scaler)
 
         # Step schedulers that track epochs
@@ -422,6 +469,8 @@ def main():
             "test_loss":  round(test_loss,  6),
             "test_acc":   round(test_acc,   4),
             "time_s":     round(elapsed,    2),
+            "grad_norm": round(grad_norm, 6),
+            "weight_norm": round(compute_weight_norm(model), 6),
         }
         history.append(record)
         wandb.log(record) 
@@ -439,12 +488,14 @@ def main():
         is_best = val_acc > best_acc
         if is_best:
             best_acc = val_acc
+            best_loss = val_loss 
             epochs_no_improve = 0
             torch.save({
                 "epoch": epoch,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "best_acc": best_acc,
+                "best_loss": best_loss,
                 "history": history,
                 "args": vars(args),
             }, out_dir / "best.pt")
@@ -474,7 +525,7 @@ def main():
     artifact = wandb.Artifact(
         name=f"model-{args.run_name}",
         type="model",
-        metadata={"best_val_acc": best_acc},
+        metadata={"best_val_acc": best_acc, "best_val_loss": best_loss},
     )
     artifact.add_file(str(out_dir / "best.pt"))
     wandb.log_artifact(artifact)
