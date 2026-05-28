@@ -277,6 +277,8 @@ def compute_hessian_metrics(
 
     inputs, targets = get_one_hessian_batch(trainloader, device)
 
+    model.zero_grad(set_to_none=True)
+
     hessian_comp = hessian(
         model,
         criterion,
@@ -285,14 +287,17 @@ def compute_hessian_metrics(
     )
 
     eigenvalues, _ = hessian_comp.eigenvalues(top_n=top_n)
+    model.zero_grad(set_to_none=True)
 
     trace_estimates = hessian_comp.trace(maxIter=trace_samples)
     trace_mean = float(sum(trace_estimates) / len(trace_estimates))
+    model.zero_grad(set_to_none=True)
 
     density_eigen, density_weight = hessian_comp.density(
         iter=density_iter,
         n_v=density_samples,
     )
+    model.zero_grad(set_to_none=True)
 
     flat_eigs = []
     flat_weights = []
@@ -395,10 +400,14 @@ def analyze(
     relative_radii=(1e-4, 3e-4, 1e-3, 3e-3, 1e-2),
     samples_per_radius=20,
 ):
+    print(f"Analyzing Launched for: {run_name}")
     set_seed(42)
     # Configure device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    print("-" * 50)
     # Configure wandb
+    print("Initializing Weights & Biases run...")
     wandb_run = wandb.init(
         project="OptiML_Minima",
         name=f"{run_name}_minimum_analysis",
@@ -427,7 +436,8 @@ def analyze(
                 checkpoint_metadata[key] = _json_safe(ckpt[key])
     else:
         state_dict = ckpt
-
+    print("-" * 50)
+    print("Loading model and data...")
     # Load model and data
     trainloader, testloader = get_loaders(batch_size)
     criterion = nn.CrossEntropyLoss()
@@ -435,9 +445,11 @@ def analyze(
     model = ResNet20(num_classes=10).to(device)
     model.load_state_dict(state_dict)
     # Compute metrics
+    print("-" * 50)
+    print("Starting analysis...")
     train_loss = full_loss(model, trainloader, criterion, device)
     test_loss = full_loss(model, testloader, criterion, device)
-
+    print("Losses computed. Computing gradient norm...")
     grad_norm = gradient_norm(
         model=model,
         loader=trainloader,
@@ -445,14 +457,14 @@ def analyze(
         device=device,
         max_batches=None,
     )
-
+    print("Gradient norm computed. Computing Hessian metrics...")
     hessian_metrics = compute_hessian_metrics(
         model=model,
         trainloader=trainloader,
         criterion=criterion,
         device=device,
     )
-
+    print("Hessian metrics computed. Computing sampled sharpness curve...")
     sharpness_by_radius = sharpness_curve(
         model=model,
         loader=trainloader,
@@ -461,7 +473,8 @@ def analyze(
         relative_radii=relative_radii,
         samples_per_radius=samples_per_radius,
     )
-    # Store as json artifact in wandb for later analysis and plotting.
+    print("-" * 50)
+    print("Analysis completed. Saving results...")
     results = {
         # Metadata
         "source_run_name": run_name,
@@ -488,6 +501,7 @@ def analyze(
     wandb_run.log_artifact(result_artifact)
 
     wandb_run.finish()
+    print(f"Results saved to {results_path} and logged to Weights & Biases artifact {result_artifact.name}.")
 
 
 def parse_args():
