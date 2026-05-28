@@ -3,9 +3,6 @@ torch
 torchvision
 torchaudio
 
-# Research / analysis
-pyhessian
-
 # Experiment tracking
 wandb
 

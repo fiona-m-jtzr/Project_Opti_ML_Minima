@@ -13,7 +13,7 @@ import wandb
 from pathlib import Path
 import argparse
 
-from pyhessian import hessian
+from hessian.hessian import hessian
 
 
 # -----------------------------
