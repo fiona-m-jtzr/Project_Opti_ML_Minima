@@ -3,3 +3,4 @@
 /artifacts/*
 /.vscode/*
 */__pycache__/*
+minimum_analysis.json
