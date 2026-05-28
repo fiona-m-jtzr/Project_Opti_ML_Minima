@@ -331,21 +331,42 @@ def compute_hessian_metrics(
 
 
 def _json_safe(obj):
-    """Convert nested tensors / numpy-like numbers into JSON-safe Python objects."""
+    """Convert nested objects into JSON-safe Python types, dropping imaginary parts."""
+
+    import numpy as np
+    import torch
+
     if isinstance(obj, torch.Tensor):
-        return obj.detach().cpu().tolist()
+        obj = obj.detach().cpu()
+
+        # Handle complex tensors
+        if torch.is_complex(obj):
+            obj = obj.real
+
+        return obj.tolist()
+
+    # Python complex numbers
+    if isinstance(obj, complex):
+        return float(obj.real)
+
     if isinstance(obj, dict):
         return {k: _json_safe(v) for k, v in obj.items()}
+
     if isinstance(obj, (list, tuple)):
         return [_json_safe(v) for v in obj]
-    try:
-        import numpy as np
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.generic):
-            return obj.item()
-    except Exception:
-        pass
+
+    # NumPy arrays
+    if isinstance(obj, np.ndarray):
+        if np.iscomplexobj(obj):
+            obj = np.real(obj)
+        return obj.tolist()
+
+    # NumPy scalar types
+    if isinstance(obj, np.generic):
+        if np.iscomplexobj(obj):
+            return float(np.real(obj))
+        return obj.item()
+
     return obj
 
 ## Wandb Model Loading and Result Logging
