@@ -1,0 +1,5 @@
+/data/*
+/wandb/*
+/artifacts/*
+/.vscode/*
+*/__pycache__/*
