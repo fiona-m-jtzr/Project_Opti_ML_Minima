@@ -1,11 +1,17 @@
 import copy
 import math
+import json
 import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
-from torchvision.models import resnet18
+from models.resnet20 import ResNet20
+import os
+import tempfile
+import wandb
+from pathlib import Path
+import argparse
 
 from pyhessian import hessian
 
@@ -14,22 +20,12 @@ from pyhessian import hessian
 # Model and data utilities
 # -----------------------------
 
-def make_model():
-    """Create a CIFAR-10-compatible ResNet-18."""
-    model = resnet18(num_classes=10)
-
-    # Adapt ImageNet ResNet stem for 32x32 CIFAR-10 images.
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    model.maxpool = nn.Identity()
-
-    return model
-
 
 def get_loaders(batch_size=128):
     """Return deterministic train/test loaders for analysis."""
     transform = T.Compose([
         T.ToTensor(),
-        T.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261)),
+        T.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
     trainset = torchvision.datasets.CIFAR10(
@@ -72,7 +68,7 @@ def gradient_norm(model, loader, criterion, device, max_batches=None):
 
     A small gradient norm indicates that the model is closer to a stationary point.
     """
-    model.train()
+    model.eval()
     model.zero_grad(set_to_none=True)
 
     total_seen = 0
@@ -112,38 +108,73 @@ def parameter_norm(model):
 
 
 # -----------------------------
-# Weight perturbation utilities
+# Scale-independent perturbation utilities
 # -----------------------------
 
-def sample_random_direction_like(model):
-    """Sample a random unit-norm direction in parameter space."""
+@torch.no_grad()
+def _normalize_like_parameter(direction_tensor, parameter_tensor, eps=1e-12):
+    """
+    Normalize a random direction relative to the scale of the corresponding parameter.
+
+    For convolutional and linear weights, each output filter / row gets its own norm.
+    For 1D tensors such as biases and BatchNorm parameters, the whole tensor is normalized.
+
+    This makes the perturbation radius dimensionless: radius=0.01 means roughly a 1%
+    relative perturbation per filter/parameter group rather than an absolute movement in
+    raw parameter coordinates.
+    """
+    if parameter_tensor.ndim > 1:
+        # Treat dim 0 as the filter/output-unit dimension.
+        d_flat = direction_tensor.view(direction_tensor.size(0), -1)
+        p_flat = parameter_tensor.detach().view(parameter_tensor.size(0), -1)
+
+        d_norm = d_flat.norm(dim=1, keepdim=True)
+        p_norm = p_flat.norm(dim=1, keepdim=True)
+
+        d_flat = (d_flat / (d_norm + eps)) * (p_norm + eps)
+        return d_flat.view_as(direction_tensor)
+
+    d_norm = direction_tensor.norm()
+    p_norm = parameter_tensor.detach().norm()
+    return (direction_tensor / (d_norm + eps)) * (p_norm + eps)
+
+
+def sample_scale_invariant_direction_like(model):
+    """
+    Sample a filter-normalized direction in parameter space.
+
+    This is preferable to a single global unit-norm direction because it is much less
+    sensitive to arbitrary rescaling of layers or filters.
+    """
     direction = []
 
     for p in model.parameters():
         if p.requires_grad:
             d = torch.randn_like(p)
+            d = _normalize_like_parameter(d, p)
             direction.append(d)
-
-    norm = torch.sqrt(sum((d ** 2).sum() for d in direction))
-    direction = [d / (norm + 1e-12) for d in direction]
 
     return direction
 
 
 @torch.no_grad()
-def add_direction_to_model(model, base_state, direction, scale):
-    """Reset model to base_state and add scale * direction."""
+def add_direction_to_model(model, base_state, direction, relative_scale):
+    """
+    Reset model to base_state and add relative_scale * direction.
+
+    Because direction is filter-normalized, relative_scale is dimensionless.
+    """
     model.load_state_dict(base_state)
 
     idx = 0
     for p in model.parameters():
         if p.requires_grad:
-            p.add_(scale * direction[idx])
+            p.add_(relative_scale * direction[idx])
             idx += 1
 
 
 # -----------------------------
-# Sharpness via sampled neighbourhood
+# Sharpness via scale-independent sampled neighbourhood
 # -----------------------------
 
 def max_loss_in_neighbourhood(
@@ -151,27 +182,31 @@ def max_loss_in_neighbourhood(
     loader,
     criterion,
     device,
-    radius=1e-2,
+    relative_radius=1e-2,
     samples=20,
 ):
     """
-    Randomly sample points in a ball around the solution and report max loss.
+    Randomly sample scale-independent perturbations and report the largest loss increase.
 
-    This is a crude sharpness estimate:
-        max L(w + epsilon) - L(w)
+    The direction is filter-normalized, so the radius is a relative parameter-space radius.
+
     """
     base_state = copy.deepcopy(model.state_dict())
     base_loss = full_loss(model, loader, criterion, device)
 
     max_loss = -math.inf
     max_delta = None
+    sharpness_deltas = []
 
     for _ in range(samples):
-        direction = sample_random_direction_like(model)
-        add_direction_to_model(model, base_state, direction, radius)
+        direction = sample_scale_invariant_direction_like(model)
+        scale = relative_radius
+
+        add_direction_to_model(model, base_state, direction, scale)
 
         loss = full_loss(model, loader, criterion, device)
         delta = loss - base_loss
+        sharpness_deltas.append(delta)
 
         if loss > max_loss:
             max_loss = loss
@@ -183,86 +218,33 @@ def max_loss_in_neighbourhood(
         "base_loss": base_loss,
         "max_neighbourhood_loss": max_loss,
         "sharpness_delta": max_delta,
+        "mean_sharpness_delta": float(sum(sharpness_deltas) / len(sharpness_deltas)),
+        "relative_radius": relative_radius,
+        "samples": samples,
+        "scale_normalization": "filter_normalized",
     }
 
 
-# -----------------------------
-# 1D and 2D loss landscape
-# -----------------------------
-
-def loss_landscape_1d(
+def sharpness_curve(
     model,
     loader,
     criterion,
     device,
-    radius=1e-2,
-    steps=21,
+    relative_radii=(1e-4, 3e-4, 1e-3, 3e-3, 1e-2),
+    samples_per_radius=20,
 ):
-    """
-    Evaluate loss along one random direction.
-
-    Returns points:
-        alpha, L(w + alpha * d)
-    """
-    base_state = copy.deepcopy(model.state_dict())
-    direction = sample_random_direction_like(model)
-
-    alphas = torch.linspace(-radius, radius, steps)
-    losses = []
-
-    for alpha in alphas:
-        add_direction_to_model(model, base_state, direction, alpha.item())
-        losses.append(full_loss(model, loader, criterion, device))
-
-    model.load_state_dict(base_state)
-
-    return [(float(a), float(l)) for a, l in zip(alphas, losses)]
-
-
-def loss_landscape_2d(
-    model,
-    loader,
-    criterion,
-    device,
-    radius=1e-2,
-    steps=11,
-):
-    """
-    Evaluate loss on a 2D grid around the solution.
-
-    Uses two random directions d1 and d2:
-        L(w + alpha * d1 + beta * d2)
-    """
-    base_state = copy.deepcopy(model.state_dict())
-    d1 = sample_random_direction_like(model)
-    d2 = sample_random_direction_like(model)
-
-    values = []
-    coords = torch.linspace(-radius, radius, steps)
-
-    for alpha in coords:
-        row = []
-
-        for beta in coords:
-            model.load_state_dict(base_state)
-
-            idx = 0
-            with torch.no_grad():
-                for p in model.parameters():
-                    if p.requires_grad:
-                        p.add_(alpha.item() * d1[idx] + beta.item() * d2[idx])
-                        idx += 1
-
-            row.append(full_loss(model, loader, criterion, device))
-
-        values.append(row)
-
-    model.load_state_dict(base_state)
-
-    return {
-        "coords": [float(c) for c in coords],
-        "loss_grid": values,
-    }
+    """Compute scale-independent sampled sharpness for several relative radii."""
+    return [
+        max_loss_in_neighbourhood(
+            model=model,
+            loader=loader,
+            criterion=criterion,
+            device=device,
+            relative_radius=r,
+            samples=samples_per_radius,
+        )
+        for r in relative_radii
+    ]
 
 
 # -----------------------------
@@ -287,6 +269,9 @@ def compute_hessian_metrics(
 ):
     """
     Compute Hessian eigenvalues, trace, spectral density, and normalized Hessian stats.
+
+    Raw Hessian eigenvalues are still coordinate-scale dependent. The normalized quantities
+    multiply by ||w||^2 and are the safer values to compare across differently scaled models.
     """
     model.eval()
 
@@ -299,21 +284,16 @@ def compute_hessian_metrics(
         cuda=(device == "cuda"),
     )
 
-    # Top eigenvalues.
-    eigenvalues, eigenvectors = hessian_comp.eigenvalues(top_n=top_n)
+    eigenvalues, _ = hessian_comp.eigenvalues(top_n=top_n)
 
-    # Hutchinson-style trace estimates.
     trace_estimates = hessian_comp.trace(maxIter=trace_samples)
     trace_mean = float(sum(trace_estimates) / len(trace_estimates))
 
-    # Hessian spectral density estimate.
-    # PyHessian returns eigenvalue-density samples suitable for plotting.
     density_eigen, density_weight = hessian_comp.density(
         iter=density_iter,
         n_v=density_samples,
     )
 
-    # Approximate negative curvature ratio from the density samples.
     flat_eigs = []
     flat_weights = []
 
@@ -323,65 +303,149 @@ def compute_hessian_metrics(
 
     total_weight = sum(flat_weights) + 1e-12
     negative_weight = sum(w for e, w in zip(flat_eigs, flat_weights) if e < 0.0)
-
     negative_curvature_ratio = negative_weight / total_weight
 
     weight_norm = parameter_norm(model)
     top_eig = float(eigenvalues[0])
 
     return {
-        "top_eigenvalues": [float(v) for v in eigenvalues],
-        "trace_estimates": [float(v) for v in trace_estimates],
-        "trace_mean": trace_mean,
+        # Raw values are included for diagnostics, not for scale-independent comparison.
+        "raw_top_eigenvalues": [float(v) for v in eigenvalues],
+        "raw_trace_estimates": [float(v) for v in trace_estimates],
+        "raw_trace_mean": trace_mean,
 
-        # Normalized Hessian quantities.
-        # This is a simple scale-aware normalization using ||w||^2.
+        # Prefer these for cross-model comparison.
         "weight_norm": weight_norm,
         "normalized_top_eigenvalue": top_eig * (weight_norm ** 2),
         "normalized_trace": trace_mean * (weight_norm ** 2),
 
-        # Hessian spectrum density.
         "density_eigen": density_eigen,
         "density_weight": density_weight,
-
-        # Approximate amount of negative curvature.
         "negative_curvature_ratio": float(negative_curvature_ratio),
     }
 
 
+def _json_safe(obj):
+    """Convert nested tensors / numpy-like numbers into JSON-safe Python objects."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    try:
+        import numpy as np
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+    except Exception:
+        pass
+    return obj
+
+## Wandb Model Loading and Result Logging
+
+def load_wandb_checkpoint(run, artifact_ref, filename="best.pt", device="cpu"):
+    artifact = run.use_artifact(artifact_ref, type="model")
+    artifact_dir = artifact.download()
+    ckpt_path = os.path.join(artifact_dir, filename)
+
+    ckpt = torch.load(ckpt_path, map_location=device)
+    return ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
+
+
+def log_results_artifact(run, results, artifact_name="minimum-analysis-results"):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_path = os.path.join(tmpdir, "minimum_analysis_scale_invariant.json")
+
+        with open(out_path, "w") as f:
+            json.dump(_json_safe(results), f, indent=2)
+
+        artifact = wandb.Artifact(
+            name=artifact_name,
+            type="analysis",
+            metadata={
+                "analysis": "minimum_analysis_scale_invariant",
+            },
+        )
+        artifact.add_file(out_path, name="minimum_analysis_scale_invariant.json")
+        run.log_artifact(artifact)
+
+
+## Reproducibility
+def set_seed(seed=42):
+    import random
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
 # -----------------------------
 # Main analysis
 # -----------------------------
-
 def analyze(
-    ckpt_path="cifar10_resnet18.pt",
+    run_name,
     batch_size=128,
-    neighbourhood_radius=1e-2,
-    neighbourhood_samples=20,
-    landscape_radius=1e-2,
+    relative_radii=(1e-4, 3e-4, 1e-3, 3e-3, 1e-2),
+    samples_per_radius=20,
 ):
+    set_seed(42)
+    # Configure device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Configure wandb
+    wandb_run = wandb.init(
+        project="OptiML_Minima",
+        name=f"{run_name}_minimum_analysis",
+        job_type="minimum-analysis",
+        config={
+            "source_run_name": run_name,
+            "batch_size": batch_size,
+            "relative_radii": list(relative_radii),
+            "samples_per_radius": samples_per_radius,
+        },
+    )
 
+    artifact = wandb_run.use_artifact(
+        f"{wandb_run.entity}/OptiML_Minima/{run_name}:latest",
+        type="model",
+    )
+    artifact_dir = artifact.download()
+    ckpt_path = Path(artifact_dir) / "best.pt"
+    ckpt = torch.load(ckpt_path, map_location=device)
+    checkpoint_metadata = {}
+
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        state_dict = ckpt["model"]
+        for key in ["epoch", "best_acc", "args", "history"]:
+            if key in ckpt:
+                checkpoint_metadata[key] = _json_safe(ckpt[key])
+    else:
+        state_dict = ckpt
+
+    # Load model and data
     trainloader, testloader = get_loaders(batch_size)
     criterion = nn.CrossEntropyLoss()
 
-    model = make_model().to(device)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
-
-    # Full-dataset losses.
+    model = ResNet20(num_classes=10).to(device)
+    model.load_state_dict(state_dict)
+    # Compute metrics
     train_loss = full_loss(model, trainloader, criterion, device)
     test_loss = full_loss(model, testloader, criterion, device)
 
-    # Gradient norm near the solution.
     grad_norm = gradient_norm(
         model=model,
         loader=trainloader,
         criterion=criterion,
         device=device,
-        max_batches=10,
+        max_batches=None,
     )
 
-    # Hessian eigenvalues, trace, density, normalized Hessian, negative curvature.
     hessian_metrics = compute_hessian_metrics(
         model=model,
         trainloader=trainloader,
@@ -389,77 +453,56 @@ def analyze(
         device=device,
     )
 
-    # Random-neighbourhood sharpness.
-    neighbourhood_metrics = max_loss_in_neighbourhood(
+    sharpness_by_radius = sharpness_curve(
         model=model,
         loader=trainloader,
         criterion=criterion,
         device=device,
-        radius=neighbourhood_radius,
-        samples=neighbourhood_samples,
+        relative_radii=relative_radii,
+        samples_per_radius=samples_per_radius,
     )
+    # Store as json artifact in wandb for later analysis and plotting.
+    results = {
+        # Metadata
+        "source_run_name": run_name,
+        "source_artifact": f"{run_name}:latest",
+        "checkpoint_metadata": checkpoint_metadata,
+        # Results
+        "train_loss": train_loss,
+        "test_loss": test_loss,
+        "train_test_gap": test_loss - train_loss,
+        "gradient_norm_full_train_dataset": grad_norm,
+        "hessian_metrics": hessian_metrics,
+        "scale_invariant_sharpness_by_radius": sharpness_by_radius,
+    }
 
-    # 1D and 2D loss landscape samples.
-    landscape_1d = loss_landscape_1d(
-        model=model,
-        loader=trainloader,
-        criterion=criterion,
-        device=device,
-        radius=landscape_radius,
-        steps=21,
+    results_path = Path("minimum_analysis.json")
+    with open(results_path, "w") as f:
+        json.dump(_json_safe(results), f, indent=2)
+
+    result_artifact = wandb.Artifact(
+        f"{run_name}-minimum-analysis",
+        type="analysis",
     )
+    result_artifact.add_file(results_path)
+    wandb_run.log_artifact(result_artifact)
 
-    landscape_2d = loss_landscape_2d(
-        model=model,
-        loader=trainloader,
-        criterion=criterion,
-        device=device,
-        radius=landscape_radius,
-        steps=11,
-    )
+    wandb_run.finish()
 
-    print("\n=== Minimum Analysis ===")
-    print(f"Train loss: {train_loss:.6f}")
-    print(f"Test loss:  {test_loss:.6f}")
-    print(f"Train-test gap: {test_loss - train_loss:.6f}")
 
-    print("\n=== Gradient Norm ===")
-    print(f"Gradient norm, first 10 train batches: {grad_norm:.6e}")
-
-    print("\n=== Hessian ===")
-    print(f"Top eigenvalues: {hessian_metrics['top_eigenvalues']}")
-    print(f"Trace mean:      {hessian_metrics['trace_mean']:.6f}")
-
-    print("\n=== Normalized Hessian ===")
-    print(f"Weight norm:                 {hessian_metrics['weight_norm']:.6f}")
-    print(f"Normalized top eigenvalue:   {hessian_metrics['normalized_top_eigenvalue']:.6f}")
-    print(f"Normalized trace:            {hessian_metrics['normalized_trace']:.6f}")
-
-    print("\n=== Hessian Spectrum Density ===")
-    print("Density eigenvalue samples and weights are stored in:")
-    print("hessian_metrics['density_eigen']")
-    print("hessian_metrics['density_weight']")
-
-    print("\n=== Negative Curvature ===")
-    print(
-        "Approx. negative curvature ratio: "
-        f"{hessian_metrics['negative_curvature_ratio']:.6f}"
-    )
-
-    print("\n=== Sampled-Neighbourhood Sharpness ===")
-    print(f"Base loss:                   {neighbourhood_metrics['base_loss']:.6f}")
-    print(f"Max neighbourhood loss:      {neighbourhood_metrics['max_neighbourhood_loss']:.6f}")
-    print(f"Sharpness delta:             {neighbourhood_metrics['sharpness_delta']:.6f}")
-
-    print("\n=== 1D Loss Landscape ===")
-    for alpha, loss in landscape_1d:
-        print(f"alpha={alpha:+.6f}, loss={loss:.6f}")
-
-    print("\n=== 2D Loss Landscape ===")
-    print("2D landscape stored as:")
-    print("landscape_2d['coords']")
-    print("landscape_2d['loss_grid']")
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run_name", required=True)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--samples_per_radius", type=int, default=20)
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    analyze()
+    args = parse_args()
+
+    analyze(
+        run_name=args.run_name,
+        batch_size=args.batch_size,
+        samples_per_radius=args.samples_per_radius,
+    )
