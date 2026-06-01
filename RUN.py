@@ -20,6 +20,7 @@ import torchvision.transforms as transforms
 from optimizers.sam import SAM
 from optimizers.lbfgs import LBFGS
 from models.resnet20 import ResNet20
+from optimizers.muon import SingleDeviceMuonWithAuxAdam
 
 
 # ---------------------------------------------------------------------------
@@ -101,15 +102,31 @@ def build_optimizer(model, args):
         if args.base_optimizer.lower() == "sgd":
             base_kwargs.update(momentum=args.momentum, nesterov=args.nesterov)
         return SAM(params, base_cls, rho=args.rho,
-                   adaptive=args.adaptive_sam, **base_kwargs)
-    elif opt == "lbfgs":
-        return LBFGS(
-            params,
-            lr=args.lr,
-            max_iter=args.max_iter,
-            history_size=args.history_size,
-            line_search_fn=args.line_search_fn if args.line_search_fn != "none" else None,
+                   adaptive=args.adaptive_sam, **base_kwargs
         )
+    elif opt == "muon":
+        muon_params = [
+            p for name, p in model.named_parameters()
+            if p.ndim >= 2 and "bn" not in name and "bias" not in name
+        ]
+        adam_params = [
+            p for name, p in model.named_parameters()
+            if p.ndim < 2 or "bn" in name or "bias" in name
+        ]
+        param_groups = [
+            dict(params=muon_params,
+                lr=0.02,
+                momentum=0.95,
+                weight_decay=0.0, 
+                use_muon=True),
+            dict(params=adam_params,
+                lr=3e-4,
+                betas=(0.9, 0.95),
+                eps=1e-10,
+                weight_decay=0.0,
+                use_muon=False),
+        ]
+        return SingleDeviceMuonWithAuxAdam(param_groups)
     else:
         raise ValueError(f"Unknown optimizer: {opt}. "
                          "Choose from: sgd, adam, adamw, rmsprop, adagrad, sam")
@@ -161,107 +178,53 @@ def build_scheduler(optimizer, args, steps_per_epoch):
 # Training / evaluation loops
 # ---------------------------------------------------------------------------
 
-def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
+def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
-    is_lbfgs = isinstance(optimizer, LBFGS)
     is_sam = isinstance(optimizer, SAM)
-
-    grad_norm_sum = 0.0 
+    grad_norm_sum = 0.0
 
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
 
-        if is_lbfgs:
-            optimizer.set_batch(inputs, targets, model, criterion)
-            loss = optimizer.step()       
-            outputs = optimizer._last_outputs
+        if is_sam:
+            # Step 1: forward + backward at w
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+
             grad_norm = sum(
                 p.grad.norm().item() ** 2
                 for p in model.parameters()
                 if p.grad is not None
             ) ** 0.5
 
-        if is_sam:
-            # --- SAM two-step update ---
-            # Step 1: forward + backward at w, perturb to w + e(w)
-            if scaler:
-                with torch.autocast(device_type=device.type):
-                    outputs = model(inputs)
-                    loss = criterion(outputs, targets)
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-    
-                grad_norm = sum(
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters()
-                    if p.grad is not None
-                ) ** 0.5
-                
-                optimizer.first_step(zero_grad=True)
+            optimizer.first_step(zero_grad=True)
 
-                # Step 2: forward + backward at perturbed weights
-                with torch.autocast(device_type=device.type):
-                    loss = criterion(model(inputs), targets)
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                optimizer.second_step(zero_grad=True)
-                scaler.update()
-            else:
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-                loss.backward()
+            # Step 2: forward + backward at w + e(w)
+            outputs = model(inputs)
+            criterion(outputs, targets).backward()
+            optimizer.second_step(zero_grad=True)
 
-                grad_norm = sum(
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters()
-                    if p.grad is not None
-                ) ** 0.5
-
-                optimizer.first_step(zero_grad=True)
-
-                loss = criterion(model(inputs), targets)
-                loss.backward()
-
-                optimizer.second_step(zero_grad=True)
         else:
-            # --- Standard single-step update ---
             optimizer.zero_grad()
-            if scaler:
-                with torch.autocast(device_type=device.type):
-                    outputs = model(inputs)
-                    loss = criterion(outputs, targets)
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                
-                grad_norm = sum(                       
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters()
-                    if p.grad is not None
-                ) ** 0.5
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
 
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-                loss.backward()
+            grad_norm = sum(
+                p.grad.norm().item() ** 2
+                for p in model.parameters()
+                if p.grad is not None
+            ) ** 0.5
 
-                grad_norm = sum(
-                    p.grad.norm().item() ** 2
-                    for p in model.parameters()
-                    if p.grad is not None
-                ) ** 0.5
-
-                optimizer.step()
+            optimizer.step()
 
         total_loss += loss.item() * inputs.size(0)
         _, predicted = outputs.max(1)
         correct += predicted.eq(targets).sum().item()
-        total   += inputs.size(0)
-
+        total += inputs.size(0)
         grad_norm_sum += grad_norm
-
 
     return total_loss / total, 100.0 * correct / total, grad_norm_sum / len(loader)
 
@@ -323,14 +286,14 @@ def parse_args():
     p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=4)
-    p.add_argument("--amp",         action="store_true",
-                   help="Use automatic mixed precision (AMP / fp16)")
     p.add_argument("--label_smoothing", type=float, default=0.0,
                    help="Label-smoothing factor for cross-entropy (0 = off)")
+    p.add_argument("--patience", type=int, default=20,
+                    help="Early stopping patience in epochs")
 
     # --- Optimizer ---
     p.add_argument("--optimizer", type=str, default="sgd",
-                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "lbfgs"],
+                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "muon"],
                    help="Optimizer to use")
     p.add_argument("--lr",           type=float, default=0.1,  help="Learning rate")
     p.add_argument("--weight_decay", type=float, default=1e-4, help="L2 weight decay")
@@ -351,7 +314,7 @@ def parse_args():
     p.add_argument("--line_search_fn",  type=str,   default="strong_wolfe",
                 choices=["strong_wolfe", "none"],
                 help="Line search for L-BFGS (strong_wolfe strongly recommended)")
-    # SAM-specific
+    # SAM specific
     p.add_argument("--rho",           type=float, default=0.05, help="SAM neighbourhood size")
     p.add_argument("--adaptive_sam",  action="store_true",      help="Use adaptive SAM (ASAM)")
     p.add_argument("--base_optimizer", type=str, default="sgd",
@@ -443,7 +406,6 @@ def main():
     # Optimizer & scheduler
     optimizer = build_optimizer(model, args)
     scheduler = build_scheduler(optimizer, args, steps_per_epoch=len(train_loader))
-    scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
     
     # Optionally resume
     start_epoch = 0
@@ -461,7 +423,7 @@ def main():
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
     
-    patience = 20
+    patience = args.patience
     epochs_no_improve = 0
 
     # ---------- Training loop ----------
@@ -471,7 +433,7 @@ def main():
         t0 = time.time()
 
         train_loss, train_acc, grad_norm = train_epoch(
-            model, train_loader, optimizer, criterion, device, scaler)
+            model, train_loader, optimizer, criterion, device)
 
         # Step schedulers that track epochs
         if scheduler and not step_scheduler_per_batch:
