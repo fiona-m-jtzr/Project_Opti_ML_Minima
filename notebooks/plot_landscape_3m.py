@@ -172,7 +172,7 @@ def plot_3_model_bounding_rectangle(model_class, model1, model2, model3,
     ax2.legend()
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig('notebooks/mon_loss_landscape.png', bbox_inches='tight')
 
 best0 = torch.load('best0.pt', map_location=device)
 
