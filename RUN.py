@@ -18,6 +18,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 from optimizers.sam import SAM
+from optimizers.lbfgs import LBFGS
 from models.resnet20 import ResNet20
 
 
@@ -101,6 +102,14 @@ def build_optimizer(model, args):
             base_kwargs.update(momentum=args.momentum, nesterov=args.nesterov)
         return SAM(params, base_cls, rho=args.rho,
                    adaptive=args.adaptive_sam, **base_kwargs)
+    elif opt == "lbfgs":
+        return LBFGS(
+            params,
+            lr=args.lr,
+            max_iter=args.max_iter,
+            history_size=args.history_size,
+            line_search_fn=args.line_search_fn if args.line_search_fn != "none" else None,
+        )
     else:
         raise ValueError(f"Unknown optimizer: {opt}. "
                          "Choose from: sgd, adam, adamw, rmsprop, adagrad, sam")
@@ -155,12 +164,23 @@ def build_scheduler(optimizer, args, steps_per_epoch):
 def train_epoch(model, loader, optimizer, criterion, device, scaler=None):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
+    is_lbfgs = isinstance(optimizer, LBFGS)
     is_sam = isinstance(optimizer, SAM)
 
     grad_norm_sum = 0.0 
 
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
+
+        if is_lbfgs:
+            optimizer.set_batch(inputs, targets, model, criterion)
+            loss = optimizer.step()       
+            outputs = optimizer._last_outputs
+            grad_norm = sum(
+                p.grad.norm().item() ** 2
+                for p in model.parameters()
+                if p.grad is not None
+            ) ** 0.5
 
         if is_sam:
             # --- SAM two-step update ---
@@ -302,7 +322,7 @@ def parse_args():
     # --- Training ---
     p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
-    p.add_argument("--num_workers", type=int,   default=0)
+    p.add_argument("--num_workers", type=int,   default=4)
     p.add_argument("--amp",         action="store_true",
                    help="Use automatic mixed precision (AMP / fp16)")
     p.add_argument("--label_smoothing", type=float, default=0.0,
@@ -310,7 +330,7 @@ def parse_args():
 
     # --- Optimizer ---
     p.add_argument("--optimizer", type=str, default="sgd",
-                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam"],
+                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "lbfgs"],
                    help="Optimizer to use")
     p.add_argument("--lr",           type=float, default=0.1,  help="Learning rate")
     p.add_argument("--weight_decay", type=float, default=1e-4, help="L2 weight decay")
@@ -323,6 +343,14 @@ def parse_args():
     p.add_argument("--eps",   type=float, default=1e-8,  help="Adam epsilon")
     # RMSprop
     p.add_argument("--alpha", type=float, default=0.99, help="RMSprop smoothing constant")
+    # LBFGS specific
+    p.add_argument("--max_iter",        type=int,   default=20,
+                help="Max iterations per step for L-BFGS")
+    p.add_argument("--history_size",    type=int,   default=100,
+                help="L-BFGS history size")
+    p.add_argument("--line_search_fn",  type=str,   default="strong_wolfe",
+                choices=["strong_wolfe", "none"],
+                help="Line search for L-BFGS (strong_wolfe strongly recommended)")
     # SAM-specific
     p.add_argument("--rho",           type=float, default=0.05, help="SAM neighbourhood size")
     p.add_argument("--adaptive_sam",  action="store_true",      help="Use adaptive SAM (ASAM)")
