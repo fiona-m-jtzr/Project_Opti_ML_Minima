@@ -95,21 +95,21 @@ def plot_loss_landscape_generic(model_class, state_dict_A, state_dict_B, test_lo
     plt.show()
 
 
-best0 = torch.load('best0.pt', map_location=device)
+best0 = torch.load('notebooks/best0.pt', map_location=device)
 random_model0 = ResNet20() 
 best_model0 = ResNet20() 
 state_dict0 = best0.get('model')
 best_model0.load_state_dict(state_dict0)
 best_model0 = best_model0.to(device)
 
-best1 = torch.load('best1.pt', map_location=device)
+best1 = torch.load('notebooks/best1.pt', map_location=device)
 random_model1 = ResNet20() 
 best_model1 = ResNet20() 
 state_dict1 = best1.get('model')
 best_model1.load_state_dict(state_dict1)
 best_model1 = best_model1.to(device)
 
-best2 = torch.load('best2.pt', map_location=device)
+best2 = torch.load('notebooks/best2.pt', map_location=device)
 random_model2 = ResNet20() 
 best_model2 = ResNet20() 
 state_dict2 = best2.get('model')
