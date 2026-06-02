@@ -1,55 +1,98 @@
 """
-Loss Landscape Visualization between Three Trained ResNet20 Models
-==================================================================
-Uses triangular (barycentric) interpolation in parameter space to map
-the cross-entropy loss and accuracy over the 2D simplex defined by the
-three model checkpoints.
+Loss Landscape Visualization for Three ResNet20 Minima
+=======================================================
+Plots the loss landscape in the 2D subspace spanned by the directions
+connecting three trained models (model0, model1, model2) on CIFAR-10.
 
-Usage:
+Method
+------
+1. Flatten all parameters of each model into a vector.
+2. Use PCA on the displacement vectors (model1 - model0, model2 - model0)
+   to find two orthogonal directions that span the plane containing the
+   three minima.
+3. Apply filter-normalisation to each direction so that the landscape
+   scale is comparable across layers (Li et al., 2018).
+4. Sweep a 2D grid around model0 in that plane, compute the loss at each
+   point, and plot the result as a filled contour + surface plot.
+
+Reference
+---------
+Hao Li, Zheng Xu, Gavin Taylor, Christoph Studer, Tom Goldstein.
+"Visualizing the Loss Landscape of Neural Nets." NeurIPS 2018.
+https://arxiv.org/abs/1712.09913
+
+Usage
+-----
+Adjust the CONFIG block below, then run:
     python plot_loss_landscape.py
-
-Outputs:
-    loss_landscape.png  –  2D filled-contour plot of the loss surface
-    acc_landscape.png   –  2D filled-contour plot of the accuracy surface
 """
 
 import copy
+import os
+
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
 import torchvision
 import torchvision.transforms as transforms
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.tri as mtri
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib import cm
 
-# ──────────────────────────────────────────────────────────────
-# 0.  Device
-# ──────────────────────────────────────────────────────────────
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# ─────────────────────────────────────────────
+# CONFIG  –  edit these paths / settings
+# ─────────────────────────────────────────────
+CONFIG = dict(
+    # Paths to saved model state-dicts
+    model0_path="model0.pth",
+    model1_path="model1.pth",
+    model2_path="model2.pth",
+
+    # CIFAR-10 root (will be downloaded if absent)
+    data_root="./data",
+
+    # Grid resolution (N×N points).  Start with 21 for a quick preview,
+    # then raise to 51-101 for publication quality.
+    grid_size=21,
+
+    # How far to travel along each PCA direction (in units of the
+    # filter-normalised direction vector).  Increase if minima fall
+    # outside the visible region.
+    alpha_range=(-1.0, 1.0),
+    beta_range=(-1.0, 1.0),
+
+    # Number of CIFAR-10 samples used to evaluate the loss at each grid
+    # point.  256-512 gives a good speed/accuracy trade-off.
+    n_eval_samples=512,
+    batch_size=128,
+
+    # Output filenames
+    out_contour="loss_landscape_contour.png",
+    out_surface="loss_landscape_surface.png",
+)
+# ─────────────────────────────────────────────
 
 
-# ──────────────────────────────────────────────────────────────
-# 1.  Model definition
-# ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════
+# MODEL DEFINITION  (paste your own here)
+# ══════════════════════════════════════════════
+
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 3,
-                               stride=stride, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride,
+                               padding=1, bias=False)
         self.bn1   = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3,
-                               stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1,
+                               padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(out_channels)
+
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1,
-                          stride=stride, bias=False),
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
                 nn.BatchNorm2d(out_channels),
             )
 
@@ -83,294 +126,290 @@ class ResNet20(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out",
                                         nonlinearity="relu")
             elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight);  nn.init.zeros_(m.bias)
+                nn.init.ones_(m.weight); nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight);  nn.init.zeros_(m.bias)
+                nn.init.kaiming_normal_(m.weight); nn.init.zeros_(m.bias)
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
-        out = self.layer1(out);  out = self.layer2(out);  out = self.layer3(out)
+        out = self.layer1(out); out = self.layer2(out); out = self.layer3(out)
         out = F.adaptive_avg_pool2d(out, 1)
         out = out.view(out.size(0), -1)
         return self.fc(out)
 
 
-# ──────────────────────────────────────────────────────────────
-# 2.  Load the three models
-# ──────────────────────────────────────────────────────────────
-def load_model(path):
-    checkpoint = torch.load(path, map_location=device)
-    model = ResNet20()
-    model.load_state_dict(checkpoint["model"])
-    model.to(device)
-    model.eval()
-    return model
+# ══════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
-print("Loading models …")
-model0 = load_model("notebooks/best0.pt")
-model1 = load_model("notebooks/best1.pt")
-model2 = load_model("notebooks/best2.pt")
-models = [model0, model1, model2]
+def params_to_vector(model: nn.Module) -> np.ndarray:
+    """Flatten all parameters (and buffers) into a single numpy vector."""
+    return np.concatenate([
+        p.detach().cpu().numpy().ravel()
+        for p in model.parameters()
+    ])
 
 
-# ──────────────────────────────────────────────────────────────
-# 3.  CIFAR-10 validation loader  (subset for speed)
-# ──────────────────────────────────────────────────────────────
-EVAL_SAMPLES = 2000   # increase for higher fidelity (slower)
-BATCH_SIZE   = 256
-
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465),
-                         (0.2023, 0.1994, 0.2010)),
-])
-
-full_val = torchvision.datasets.CIFAR10(
-    root="./data", train=False, download=True, transform=transform_test
-)
-subset_idx = torch.randperm(len(full_val))[:EVAL_SAMPLES].tolist()
-val_subset  = torch.utils.data.Subset(full_val, subset_idx)
-val_loader  = torch.utils.data.DataLoader(
-    val_subset, batch_size=BATCH_SIZE, shuffle=False,
-    num_workers=0, pin_memory=False   # num_workers=0 required on macOS
-)
-
-
-# ──────────────────────────────────────────────────────────────
-# 4.  Parameter-space interpolation utilities
-# ──────────────────────────────────────────────────────────────
-def get_weights(model):
-    """Flatten all parameters into a single 1-D tensor."""
-    return torch.cat([p.data.view(-1) for p in model.parameters()])
-
-
-def set_weights(model, flat_weights):
-    """Load a flat weight vector back into a model (in-place)."""
+def vector_to_params(vec: np.ndarray, model: nn.Module) -> None:
+    """Write a flat numpy vector back into model parameters (in-place)."""
     offset = 0
     for p in model.parameters():
-        n = p.numel()
-        p.data.copy_(flat_weights[offset:offset + n].view(p.shape))
-        offset += n
+        numel = p.numel()
+        p.data.copy_(
+            torch.from_numpy(vec[offset: offset + numel]).reshape(p.shape)
+        )
+        offset += numel
 
 
-def interpolate_weights(w0, w1, w2, alpha, beta):
+# ── Filter normalisation (Li et al. §3.1) ─────────────────────────────────────
+# Each direction vector is rescaled so that, for every convolutional / linear
+# filter, the norm of the direction matches the norm of the corresponding
+# filter in the reference model.  This removes the scale ambiguity caused by
+# different weight magnitudes in different layers.
+
+def _filter_norms(model: nn.Module) -> list[np.ndarray]:
+    """Return per-filter norms for every parameter tensor in the model."""
+    norms = []
+    for p in model.parameters():
+        w = p.detach().cpu().numpy()
+        if w.ndim == 1:                        # BN scale / bias / fc bias
+            norms.append(np.abs(w) + 1e-10)   # treat each scalar as its own filter
+        else:
+            # Reshape to (n_filters, -1) and compute L2 norm per filter
+            n = w.reshape(w.shape[0], -1)
+            norms.append(np.linalg.norm(n, axis=1) + 1e-10)
+    return norms
+
+
+def filter_normalise(direction: np.ndarray,
+                     reference_norms: list[np.ndarray],
+                     model: nn.Module) -> np.ndarray:
     """
-    Barycentric interpolation:
-        w = alpha*w0 + beta*w1 + (1-alpha-beta)*w2
-    Valid when alpha >= 0, beta >= 0, alpha+beta <= 1.
+    Rescale `direction` (a flat parameter vector) so that each filter in
+    `direction` has the same L2 norm as the corresponding filter in the
+    reference model.
     """
-    gamma = 1.0 - alpha - beta
-    return alpha * w0 + beta * w1 + gamma * w2
+    d = direction.copy()
+    offset = 0
+    for p, ref_norm in zip(model.parameters(), reference_norms):
+        w = p.detach().cpu().numpy()
+        numel = p.numel()
+        d_block = d[offset: offset + numel].reshape(w.shape)
+
+        if w.ndim == 1:
+            # scale each scalar independently
+            d_block = d_block * (ref_norm / (np.abs(d_block) + 1e-10))
+        else:
+            n_filters = w.shape[0]
+            d_flat  = d_block.reshape(n_filters, -1)
+            d_norms = np.linalg.norm(d_flat, axis=1, keepdims=True) + 1e-10
+            scale   = ref_norm.reshape(-1, 1) / d_norms
+            d_block = (d_flat * scale).reshape(w.shape)
+
+        d[offset: offset + numel] = d_block.ravel()
+        offset += numel
+    return d
 
 
-# ──────────────────────────────────────────────────────────────
-# 5.  Evaluation helper
-# ──────────────────────────────────────────────────────────────
-criterion = nn.CrossEntropyLoss()
+# ── PCA-based plane ────────────────────────────────────────────────────────────
+
+def compute_pca_directions(theta0: np.ndarray,
+                           theta1: np.ndarray,
+                           theta2: np.ndarray,
+                           model: nn.Module):
+    """
+    Return two orthonormal, filter-normalised direction vectors that span
+    the plane containing the three weight vectors.
+
+    Returns
+    -------
+    u, v : np.ndarray  (same shape as theta0)
+        Orthonormal basis vectors of the plane.
+    coords : (3, 2) np.ndarray
+        2-D coordinates of model0, model1, model2 in (u, v) space.
+    """
+    # Raw displacement vectors from model0
+    d1 = theta1 - theta0
+    d2 = theta2 - theta0
+
+    # Stack and run PCA to get the two principal directions
+    M = np.stack([d1, d2], axis=0)         # shape (2, D)
+    _, _, Vt = np.linalg.svd(M, full_matrices=False)
+    u_raw = Vt[0]   # first principal direction
+    v_raw = Vt[1]   # second principal direction
+
+    # Filter-normalise w.r.t. model0
+    ref_norms = _filter_norms(model)
+    u = filter_normalise(u_raw, ref_norms, model)
+    v = filter_normalise(v_raw, ref_norms, model)
+
+    # Re-orthonormalise after filter normalisation (Gram-Schmidt)
+    u = u / (np.linalg.norm(u) + 1e-12)
+    v = v - np.dot(v, u) * u
+    v = v / (np.linalg.norm(v) + 1e-12)
+
+    # Coordinates of the three minima in (u, v) space
+    def proj(d):
+        return np.array([np.dot(d, u), np.dot(d, v)])
+
+    coords = np.stack([proj(np.zeros_like(theta0)),
+                       proj(d1),
+                       proj(d2)], axis=0)
+    return u, v, coords
+
+
+# ── Loss evaluation ────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def evaluate(model):
+def evaluate_loss(model: nn.Module,
+                  loader: DataLoader,
+                  device: torch.device) -> float:
     model.eval()
-    total_loss, correct, total = 0.0, 0, 0
-    for inputs, targets in val_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        outputs = model(inputs)
-        loss    = criterion(outputs, targets)
-        total_loss += loss.item() * targets.size(0)
-        correct    += outputs.argmax(1).eq(targets).sum().item()
-        total      += targets.size(0)
-    return total_loss / total, 100.0 * correct / total
+    criterion = nn.CrossEntropyLoss()
+    total_loss = 0.0
+    total_n    = 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        loss   = criterion(logits, y)
+        total_loss += loss.item() * x.size(0)
+        total_n    += x.size(0)
+    return total_loss / total_n
 
 
-# ──────────────────────────────────────────────────────────────
-# 6.  Build the triangular grid  (barycentric coordinates)
-# ──────────────────────────────────────────────────────────────
-GRID_STEPS = 20   # number of steps along each edge; 20 → 231 points
+# ══════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════
 
-w0 = get_weights(model0)
-w1 = get_weights(model1)
-w2 = get_weights(model2)
+def main():
+    cfg    = CONFIG
+    device = get_device()
+    print(f"Using device: {device}")
 
-# Probe model (reuse architecture; avoid repeated allocations)
-probe = copy.deepcopy(model0)
-probe.to(device)
+    # ── Load models ───────────────────────────────────────────────────────────
+    print("Loading models …")
+    model0 = ResNet20().to(device)
+    model1 = ResNet20().to(device)
+    model2 = ResNet20().to(device)
 
-alphas, betas, losses, accs = [], [], [], []
+    model0.load_state_dict(torch.load(cfg["model0_path"], map_location=device))
+    model1.load_state_dict(torch.load(cfg["model1_path"], map_location=device))
+    model2.load_state_dict(torch.load(cfg["model2_path"], map_location=device))
 
-total_pts = (GRID_STEPS + 1) * (GRID_STEPS + 2) // 2
-print(f"Evaluating {total_pts} grid points …")
+    theta0 = params_to_vector(model0)
+    theta1 = params_to_vector(model1)
+    theta2 = params_to_vector(model2)
+    print(f"  Parameter space dimension: {theta0.shape[0]:,}")
 
-pt = 0
-for i in range(GRID_STEPS + 1):
-    for j in range(GRID_STEPS + 1 - i):
-        alpha = i / GRID_STEPS
-        beta  = j / GRID_STEPS
-        w_interp = interpolate_weights(w0, w1, w2, alpha, beta)
-        set_weights(probe, w_interp)
-        loss, acc = evaluate(probe)
-        alphas.append(alpha)
-        betas.append(beta)
-        losses.append(min(loss, 10))
-        accs.append(acc)
-        pt += 1
-        if pt % 20 == 0 or pt == total_pts:
-            print(f"  {pt}/{total_pts}  loss={loss:.4f}  acc={acc:.1f}%")
+    # ── Build evaluation dataset ──────────────────────────────────────────────
+    print("Preparing CIFAR-10 evaluation subset …")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465),
+                             (0.2023, 0.1994, 0.2010)),
+    ])
+    full_dataset = torchvision.datasets.CIFAR10(
+        root=cfg["data_root"], train=False, download=True, transform=transform
+    )
+    indices = torch.randperm(len(full_dataset))[:cfg["n_eval_samples"]].tolist()
+    subset  = Subset(full_dataset, indices)
+    loader  = DataLoader(subset, batch_size=cfg["batch_size"],
+                         shuffle=False, num_workers=2, pin_memory=True)
 
-alphas = np.array(alphas)
-betas  = np.array(betas)
-losses = np.array(losses)
-accs   = np.array(accs)
+    # ── Compute PCA directions ────────────────────────────────────────────────
+    print("Computing PCA directions in parameter space …")
+    u, v, minima_coords = compute_pca_directions(theta0, theta1, theta2, model0)
+    print(f"  Minima coordinates in (u,v) plane:")
+    labels = ["model0", "model1", "model2"]
+    for lbl, (a, b) in zip(labels, minima_coords):
+        print(f"    {lbl}: α={a:.4f}, β={b:.4f}")
 
+    # ── Sweep the grid ────────────────────────────────────────────────────────
+    N      = cfg["grid_size"]
+    alphas = np.linspace(*cfg["alpha_range"], N)
+    betas  = np.linspace(*cfg["beta_range"],  N)
+    AA, BB = np.meshgrid(alphas, betas)     # (N, N)
+    losses = np.zeros((N, N))
 
-# ──────────────────────────────────────────────────────────────
-# 7.  Convert barycentric → 2-D Cartesian for plotting
-# ──────────────────────────────────────────────────────────────
-# Place the three vertices at the corners of an equilateral triangle.
-# v0=(0,0), v1=(1,0), v2=(0.5, sqrt(3)/2)
-v0 = np.array([0.0,  0.0])
-v1 = np.array([1.0,  0.0])
-v2 = np.array([0.5,  np.sqrt(3) / 2])
+    # We perturb a single evaluation model to avoid repeated allocation
+    eval_model = copy.deepcopy(model0).to(device)
 
-gamma = 1.0 - alphas - betas
-xs = alphas * v0[0] + betas * v1[0] + gamma * v2[0]
-ys = alphas * v0[1] + betas * v1[1] + gamma * v2[1]
+    total_evals = N * N
+    print(f"Evaluating loss on {total_evals} grid points …")
+    for i, beta in enumerate(betas):
+        for j, alpha in enumerate(alphas):
+            theta = theta0 + alpha * u + beta * v
+            vector_to_params(theta, eval_model)
+            losses[i, j] = evaluate_loss(eval_model, loader, device)
 
-triang = mtri.Triangulation(xs, ys)
+        pct = (i + 1) / N * 100
+        print(f"  row {i+1:3d}/{N}  ({pct:5.1f}%)", end="\r", flush=True)
 
+    print(f"\nLoss range: [{losses.min():.4f}, {losses.max():.4f}]")
 
-# ──────────────────────────────────────────────────────────────
-# 8.  Plot
-# ──────────────────────────────────────────────────────────────
-VERTEX_LABELS = ["Model 0", "Model 1", "Model 2"]
-VERTEX_COORDS = [v0, v1, v2]
+    # ── Plot 1: Filled contour map ────────────────────────────────────────────
+    print("Plotting contour map …")
+    fig, ax = plt.subplots(figsize=(8, 7))
+    levels = np.linspace(losses.min(), losses.max(), 40)
+    cf = ax.contourf(AA, BB, losses, levels=levels, cmap="coolwarm", alpha=0.85)
+    ax.contour(AA, BB, losses, levels=levels[::4], colors="k",
+               linewidths=0.4, alpha=0.5)
+    plt.colorbar(cf, ax=ax, label="Cross-Entropy Loss")
 
-def add_triangle_labels(ax, vertex_losses, vertex_accs, mode="loss"):
-    """Annotate the three vertices with their model names and metrics."""
-    for k, (label, coord) in enumerate(zip(VERTEX_LABELS, VERTEX_COORDS)):
-        # Find the grid point closest to this vertex
-        idx_arr = np.where(
-            (np.abs(alphas - (1 if k == 0 else 0)) < 1e-9) if k == 0 else
-            (np.abs(betas  - (1 if k == 1 else 0)) < 1e-9) if k == 1 else
-            (np.abs(gamma  - (1 if k == 2 else 0)) < 1e-9)
-        )[0]
-        val = vertex_losses[k] if mode == "loss" else vertex_accs[k]
-        unit = "" if mode == "loss" else "%"
-        offsets = [(-0.12, -0.06), (0.02, -0.06), (-0.05, 0.04)]
-        ox, oy = offsets[k]
-        ax.annotate(
-            f"{label}\n{val:.3f}{unit}",
-            xy=coord, xytext=(coord[0] + ox, coord[1] + oy),
-            fontsize=9, ha="center",
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8,
-                      ec="gray", lw=0.8),
-        )
-        ax.plot(*coord, "o", ms=8, color="white",
-                markeredgecolor="black", markeredgewidth=1.5, zorder=5)
+    colors = ["#2ecc71", "#e74c3c", "#3498db"]
+    markers = ["*", "^", "D"]
+    for (a, b), lbl, col, mk in zip(minima_coords, labels, colors, markers):
+        ax.scatter(a, b, c=col, marker=mk, s=200, zorder=5,
+                   edgecolors="white", linewidths=1.2, label=lbl)
+        ax.annotate(f" {lbl}", (a, b), fontsize=9, color=col,
+                    fontweight="bold", va="bottom")
 
+    ax.set_xlabel("α  (1st PCA direction)", fontsize=12)
+    ax.set_ylabel("β  (2nd PCA direction)", fontsize=12)
+    ax.set_title("Loss Landscape – 2D PCA Plane\n(filter-normalised directions)",
+                 fontsize=13)
+    ax.legend(loc="upper right", framealpha=0.85)
+    ax.set_aspect("equal", adjustable="box")
+    fig.tight_layout()
+    fig.savefig(cfg["out_contour"], dpi=150)
+    print(f"  Saved → {cfg['out_contour']}")
 
-# ── locate vertex values ──────────────────────────────────────
-def vertex_value(k, arr):
-    """Return the array value at vertex k (pure barycentric corner)."""
-    if k == 0:
-        mask = (np.abs(alphas - 1) < 1e-9)
-    elif k == 1:
-        mask = (np.abs(betas  - 1) < 1e-9)
-    else:
-        mask = (np.abs(gamma  - 1) < 1e-9)
-    return arr[mask][0]
+    # ── Plot 2: 3-D surface ───────────────────────────────────────────────────
+    print("Plotting 3-D surface …")
+    fig3d = plt.figure(figsize=(10, 7))
+    ax3d  = fig3d.add_subplot(111, projection="3d")
+    surf  = ax3d.plot_surface(AA, BB, losses, cmap="coolwarm",
+                              rstride=1, cstride=1, alpha=0.85,
+                              linewidth=0, antialiased=True)
+    fig3d.colorbar(surf, ax=ax3d, shrink=0.5, label="Loss")
 
-gamma = 1.0 - alphas - betas
-v_losses = [vertex_value(k, losses) for k in range(3)]
-v_accs   = [vertex_value(k, accs)   for k in range(3)]
+    for (a, b), lbl, col in zip(minima_coords, labels, colors):
+        # Interpolate loss at minima location for z-placement
+        z_val = float(losses[
+            np.argmin(np.abs(betas - b)),
+            np.argmin(np.abs(alphas - a))
+        ])
+        ax3d.scatter([a], [b], [z_val + 0.02], c=col, s=80,
+                     zorder=10, label=lbl)
 
-# ── custom colormaps ──────────────────────────────────────────
-loss_cmap = LinearSegmentedColormap.from_list(
-    "loss_cmap", ["#1a1a2e", "#16213e", "#0f3460", "#e94560", "#f5a623"], N=256
-)
-acc_cmap = LinearSegmentedColormap.from_list(
-    "acc_cmap",  ["#0d0221", "#0a1045", "#1a4fd6", "#34c8e0", "#e0f7fa"], N=256
-)
+    ax3d.set_xlabel("α"); ax3d.set_ylabel("β"); ax3d.set_zlabel("Loss")
+    ax3d.set_title("Loss Landscape – 3-D View\n(filter-normalised PCA directions)")
+    ax3d.legend(loc="upper left", fontsize=8)
+    fig3d.tight_layout()
+    fig3d.savefig(cfg["out_surface"], dpi=150)
+    print(f"  Saved → {cfg['out_surface']}")
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-fig.patch.set_facecolor("#0d0d0d")
-
-for ax in axes:
-    ax.set_facecolor("#0d0d0d")
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-# ── Loss plot ─────────────────────────────────────────────────
-cf0 = axes[0].tricontourf(triang, losses, levels=30, cmap=loss_cmap)
-axes[0].tricontour (triang, losses, levels=10,
-                    colors="white", linewidths=0.4, alpha=0.35)
-cb0 = fig.colorbar(cf0, ax=axes[0], pad=0.02, fraction=0.046)
-cb0.set_label("Cross-Entropy Loss", color="white", fontsize=10)
-cb0.ax.yaxis.set_tick_params(color="white")
-plt.setp(cb0.ax.yaxis.get_ticklabels(), color="white")
-axes[0].set_title("Loss Landscape", color="white", fontsize=14,
-                   fontweight="bold", pad=12)
-add_triangle_labels(axes[0], v_losses, v_accs, mode="loss")
-
-# ── Accuracy plot ─────────────────────────────────────────────
-cf1 = axes[1].tricontourf(triang, accs, levels=30, cmap=acc_cmap)
-axes[1].tricontour (triang, accs, levels=10,
-                    colors="white", linewidths=0.4, alpha=0.35)
-cb1 = fig.colorbar(cf1, ax=axes[1], pad=0.02, fraction=0.046)
-cb1.set_label("Accuracy (%)", color="white", fontsize=10)
-cb1.ax.yaxis.set_tick_params(color="white")
-plt.setp(cb1.ax.yaxis.get_ticklabels(), color="white")
-axes[1].set_title("Accuracy Landscape", color="white", fontsize=14,
-                   fontweight="bold", pad=12)
-add_triangle_labels(axes[1], v_losses, v_accs, mode="acc")
-
-fig.suptitle(
-    "Loss Landscape — Triangular Interpolation between 3 ResNet-20 Models\n"
-    f"(CIFAR-10 · {EVAL_SAMPLES} samples · grid steps = {GRID_STEPS})",
-    color="white", fontsize=13, y=1.02
-)
-
-plt.tight_layout()
-fig.savefig("loss_landscape.png", dpi=150, bbox_inches="tight",
-            facecolor=fig.get_facecolor())
-print("Saved → loss_landscape.png")
-plt.close(fig)
+    #plt.show()
+    print("Done.")
 
 
-# ──────────────────────────────────────────────────────────────
-# 9.  Optional: 3-D surface plot
-# ──────────────────────────────────────────────────────────────
-from mpl_toolkits.mplot3d import Axes3D   # noqa: F401
-
-fig3d = plt.figure(figsize=(10, 7))
-fig3d.patch.set_facecolor("#0d0d0d")
-ax3d  = fig3d.add_subplot(111, projection="3d")
-ax3d.set_facecolor("#0d0d0d")
-
-surf = ax3d.plot_trisurf(xs, ys, losses, triangles=triang.triangles,
-                          cmap=loss_cmap, edgecolor="none", alpha=0.92)
-fig3d.colorbar(surf, ax=ax3d, pad=0.1, fraction=0.03,
-               label="Cross-Entropy Loss").ax.yaxis.label.set_color("white")
-
-ax3d.set_title("Loss Surface (3-D)", color="white", fontsize=13,
-               fontweight="bold")
-for spine in [ax3d.xaxis, ax3d.yaxis, ax3d.zaxis]:
-    spine.label.set_color("white")
-    spine.pane.fill = False
-ax3d.tick_params(colors="white")
-ax3d.grid(True, color="gray", alpha=0.2)
-
-# Vertex markers
-for k, (coord, lbl) in enumerate(zip(VERTEX_COORDS, VERTEX_LABELS)):
-    ax3d.scatter(*coord, v_losses[k], s=60, color="white",
-                 edgecolors="red", linewidths=1.5, zorder=10)
-    ax3d.text(coord[0], coord[1], v_losses[k] + 0.02, lbl,
-              color="white", fontsize=8, ha="center")
-
-fig3d.tight_layout()
-fig3d.savefig("loss_landscape_3d.png", dpi=150, bbox_inches="tight",
-              facecolor=fig3d.get_facecolor())
-print("Saved → loss_landscape_3d.png")
-plt.close(fig3d)
-
-print("\nDone! Outputs: loss_landscape.png  loss_landscape_3d.png")
+if __name__ == "__main__":
+    main()
