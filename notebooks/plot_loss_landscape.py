@@ -111,7 +111,7 @@ for i in range(grid_resolution):
         # Load parameters into the evaluation model and calculate loss
         unflatten_params(eval_model, theta_grid)
         loss = evaluate_model(eval_model, val_loader, criterion, device)
-        Z[i, j] = loss
+        Z[i, j] = min(loss, 10)
     print(f"Row {i+1}/{grid_resolution} completed.")
 
 # ==========================================
