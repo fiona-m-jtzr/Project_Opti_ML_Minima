@@ -43,6 +43,8 @@ def evaluate_model(model, dataloader, criterion, device):
 # ==========================================
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+print('device : ', device)
+
 # Placeholder: Replace these initialization blocks with your exact file paths
 # (e.g., repeating your loading logic for best0, best1, and best2)
 model0 = ResNet20().to(device)
@@ -70,9 +72,9 @@ v = theta2 - theta0
 # 3. Create Evaluation Grid
 # ==========================================
 # We use a resolution of 15x15 for quick computation. Increase to 40+ for a smoother map.
-grid_resolution = 15 
-x_coords = np.linspace(-0.5, 1.5, grid_resolution)
-y_coords = np.linspace(-0.5, 1.5, grid_resolution)
+grid_resolution = 20
+x_coords = np.linspace(-0.2, 1.2, grid_resolution)
+y_coords = np.linspace(-0.2, 1.2, grid_resolution)
 X, Y = np.meshgrid(x_coords, y_coords)
 Z = np.zeros_like(X)
 
