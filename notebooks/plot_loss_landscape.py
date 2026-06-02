@@ -52,9 +52,9 @@ model1 = ResNet20().to(device)
 model2 = ResNet20().to(device)
 
 # Example snippet for loading (adjust filenames to match your three files):
-model0.load_state_dict(torch.load('notebooks/best0.pt', map_location=device)['model'])
-model1.load_state_dict(torch.load('notebooks/best1.pt', map_location=device)['model'])
-model2.load_state_dict(torch.load('notebooks/best2.pt', map_location=device)['model'])
+model0.load_state_dict(torch.load('notebooks/best3.pt', map_location=device)['model'])
+model1.load_state_dict(torch.load('notebooks/best4.pt', map_location=device)['model'])
+model2.load_state_dict(torch.load('notebooks/best5.pt', map_location=device)['model'])
 
 # Flatten configurations
 theta0 = flatten_params(model0)
