@@ -54,7 +54,7 @@ def plot_loss_landscape_generic(model_class, state_dict_A, state_dict_B, test_lo
     blended_model = model_class().to(device)
     blended_model.eval()
     
-    alpha_values = np.linspace(0, 1, 100)
+    alpha_values = np.linspace(-0.3, 1.3, 300)
     loss_values = []
     
     with torch.no_grad():
