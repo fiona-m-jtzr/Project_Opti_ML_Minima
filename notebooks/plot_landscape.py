@@ -300,9 +300,9 @@ def main():
     model1 = ResNet20().to(device)
     model2 = ResNet20().to(device)
 
-    model0.load_state_dict(torch.load(cfg["model0_path"], map_location=device))
-    model1.load_state_dict(torch.load(cfg["model1_path"], map_location=device))
-    model2.load_state_dict(torch.load(cfg["model2_path"], map_location=device))
+    model0.load_state_dict(torch.load(cfg["/notebooks/model0_path"], map_location=device))
+    model1.load_state_dict(torch.load(cfg["/notebooks/model1_path"], map_location=device))
+    model2.load_state_dict(torch.load(cfg["/notebooks/model2_path"], map_location=device))
 
     theta0 = params_to_vector(model0)
     theta1 = params_to_vector(model1)
