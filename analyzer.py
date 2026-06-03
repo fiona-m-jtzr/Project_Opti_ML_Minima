@@ -292,11 +292,12 @@ def sharpness_curve(
     x, y = next(iter(loader))
     return x.to(device), y.to(device)"""
 
-def get_hessian_batches(loader, device, num_batches=8):
-    batches = []
+def get_hessian_batch_tensor(loader, device, num_batches=8):
+    xs, ys = [], []
     for x, y in islice(loader, num_batches):
-        batches.append((x.to(device), y.to(device)))
-    return batches
+        xs.append(x)
+        ys.append(y)
+    return torch.cat(xs, dim=0).to(device), torch.cat(ys, dim=0).to(device)
 
 
 def compute_hessian_metrics(
@@ -317,7 +318,7 @@ def compute_hessian_metrics(
     """
     model.eval()
 
-    inputs, targets = get_hessian_batches(trainloader, device)
+    inputs, targets = get_hessian_batch_tensor(trainloader, device)
 
     model.zero_grad(set_to_none=True)
 
