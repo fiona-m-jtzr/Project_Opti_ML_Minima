@@ -1,5 +1,6 @@
 """
-CIFAR-10 Training with ResNet-20
+CIFAR-10 Training 
+ResNet-20/Vision Transformer
 Investigating the loss landscape / minima shape of different optimizers.
 """
 
@@ -17,9 +18,10 @@ from torch.utils.data import DataLoader, random_split
 import torchvision
 import torchvision.transforms as transforms
 
-from optimizers.sam import SAM
-from optimizers.lbfgs import LBFGS
 from models.resnet20 import ResNet20
+from models.vit import ViTCIFAR10
+
+from optimizers.sam import SAM
 from optimizers.muon import SingleDeviceMuonWithAuxAdam
 
 
@@ -27,17 +29,31 @@ from optimizers.muon import SingleDeviceMuonWithAuxAdam
 # Data loading
 # ---------------------------------------------------------------------------
 
-def get_dataloaders(data_dir, batch_size, num_workers=4, val_fraction=0.1):
+def get_dataloaders(data_dir, batch_size, num_workers=4, val_fraction=0.1,
+                    augment=False):
     normalize = transforms.Normalize(
         mean=(0.4914, 0.4822, 0.4465),
         std =(0.2023, 0.1994, 0.2010),
     )
-    transform = transforms.Compose([transforms.ToTensor(), normalize])
+
+    if augment:
+        # Stronger augmentation recommended for ViT on small datasets
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandAugment(num_ops=2, magnitude=9),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    else:
+        train_transform = transforms.Compose([transforms.ToTensor(), normalize])
+
+    test_transform = transforms.Compose([transforms.ToTensor(), normalize])
 
     train_full = torchvision.datasets.CIFAR10(root=data_dir, train=True,
-                     download=True, transform=transform)
+                     download=True, transform=train_transform)
     test_set   = torchvision.datasets.CIFAR10(root=data_dir, train=False,
-                     download=True, transform=transform)
+                     download=True, transform=test_transform)
 
     val_size   = int(len(train_full) * val_fraction)
     train_size = len(train_full) - val_size
@@ -53,6 +69,29 @@ def get_dataloaders(data_dir, batch_size, num_workers=4, val_fraction=0.1):
     test_loader  = DataLoader(test_set,  batch_size=batch_size, shuffle=False,
                               num_workers=num_workers, pin_memory=True)
     return train_loader, val_loader, test_loader
+
+
+# ---------------------------------------------------------------------------
+# Model factory
+# ---------------------------------------------------------------------------
+
+def build_model(args):
+    """Instantiate the model from CLI arguments."""
+    m = args.model.lower()
+    if m == "resnet20":
+        return ResNet20(num_classes=10)
+    elif m == "vit":
+        return ViTCIFAR10(
+            img_size=32,
+            patch_size=4,
+            num_classes=10,
+            embed_dim=256,
+            depth=6,
+            num_heads=8,
+            mlp_ratio=4.0,
+        )
+    else:
+        raise ValueError(f"Unknown model: {m}. Choose from: resnet20, vit")
 
 
 # ---------------------------------------------------------------------------
@@ -105,38 +144,40 @@ def build_optimizer(model, args):
                    adaptive=args.adaptive_sam, **base_kwargs
         )
     elif opt == "muon":
-        muon_params = [
-            p for name, p in model.named_parameters()
-            if p.ndim >= 2 and "bn" not in name and "bias" not in name
-        ]
-        adam_params = [
-            p for name, p in model.named_parameters()
-            if p.ndim < 2 or "bn" in name or "bias" in name
-        ]
+        # For ViT: exclude embedding layers, norms, biases, and cls/pos tokens
+        # For ResNet: exclude BN layers and biases
+        def is_muon_param(name, p):
+            if p.ndim < 2:
+                return False
+            # Always exclude these regardless of model
+            exclude_keywords = ["bias", "bn", "norm",        # norms & biases
+                                 "cls_token", "pos_embed",    # ViT special tokens
+                                 "head"]                      # classifier head
+            return not any(kw in name for kw in exclude_keywords)
+
+        muon_params = [p for name, p in model.named_parameters()
+                       if is_muon_param(name, p)]
+        adam_params = [p for name, p in model.named_parameters()
+                       if not is_muon_param(name, p)]
+
         param_groups = [
-            dict(params=muon_params,
-                lr=0.02,
-                momentum=0.95,
-                weight_decay=0.0, 
-                use_muon=True),
-            dict(params=adam_params,
-                lr=3e-4,
-                betas=(0.9, 0.95),
-                eps=1e-10,
-                weight_decay=0.0,
-                use_muon=False),
+            dict(params=muon_params, lr=args.lr, momentum=args.momentum,
+                weight_decay=args.weight_decay, use_muon=True),
+            dict(params=adam_params, lr=args.lr_adamw,
+                betas=(args.beta1, args.beta2), eps=args.eps,
+                weight_decay=args.weight_decay, use_muon=False),
         ]
         return SingleDeviceMuonWithAuxAdam(param_groups)
     else:
         raise ValueError(f"Unknown optimizer: {opt}. "
-                         "Choose from: sgd, adam, adamw, rmsprop, adagrad, sam")
+                         "Choose from: sgd, adam, adamw, rmsprop, adagrad, sam, muon")
 
 
 # ---------------------------------------------------------------------------
 # LR scheduler factory
 # ---------------------------------------------------------------------------
 
-def build_scheduler(optimizer, args, steps_per_epoch):
+def build_scheduler(optimizer, args):
     """Build a learning-rate scheduler."""
     sched = args.scheduler.lower()
     base_opt = optimizer.base_optimizer if isinstance(optimizer, SAM) else optimizer
@@ -144,34 +185,23 @@ def build_scheduler(optimizer, args, steps_per_epoch):
     if sched == "none":
         return None
     elif sched == "step":
-        # Decay by gamma at milestones (default: 100 and 150 for 200-epoch run)
         milestones = args.lr_milestones or [100, 150]
         return torch.optim.lr_scheduler.MultiStepLR(
             base_opt, milestones=milestones, gamma=args.lr_gamma)
     elif sched == "cosine":
         return torch.optim.lr_scheduler.CosineAnnealingLR(
             base_opt, T_max=args.epochs, eta_min=args.min_lr)
-    elif sched == "warmup_cosine":
-        # Linear warm-up then cosine decay
-        warmup_steps = args.warmup_epochs * steps_per_epoch
-        total_steps  = args.epochs * steps_per_epoch
-
-        def lr_lambda(step):
-            if step < warmup_steps:
-                return step / max(warmup_steps, 1)
-            progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+    elif sched == "cosine_warmup":
+        # Linear warmup + cosine decay — strongly recommended for ViT
+        def lr_lambda(epoch):
+            if epoch < args.warmup_epochs:
+                return (epoch + 1) / args.warmup_epochs
+            progress = (epoch - args.warmup_epochs) / max(1, args.epochs - args.warmup_epochs)
             return 0.5 * (1.0 + math.cos(math.pi * progress))
-
         return torch.optim.lr_scheduler.LambdaLR(base_opt, lr_lambda)
-    elif sched == "cyclic":
-        return torch.optim.lr_scheduler.CyclicLR(
-            base_opt, base_lr=args.min_lr, max_lr=args.lr,
-            step_size_up=steps_per_epoch * 5, mode="triangular2",
-            cycle_momentum=False,
-        )
     else:
         raise ValueError(f"Unknown scheduler: {sched}. "
-                         "Choose from: none, step, cosine, warmup_cosine, cyclic")
+                         "Choose from: none, step, cosine, cosine_warmup")
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +218,6 @@ def train_epoch(model, loader, optimizer, criterion, device):
         inputs, targets = inputs.to(device), targets.to(device)
 
         if is_sam:
-            # Step 1: forward + backward at w
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
@@ -200,8 +229,6 @@ def train_epoch(model, loader, optimizer, criterion, device):
             ) ** 0.5
 
             optimizer.first_step(zero_grad=True)
-
-            # Step 2: forward + backward at w + e(w)
             outputs = model(inputs)
             criterion(outputs, targets).backward()
             optimizer.second_step(zero_grad=True)
@@ -245,15 +272,11 @@ def evaluate(model, loader, criterion, device):
 
 
 # ---------------------------------------------------------------------------
-# Metrics helpers  (for loss-landscape analysis)
+# Metrics helpers
 # ---------------------------------------------------------------------------
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-# ---------------------------------------------------------------------------
-# Weight norm
-# ---------------------------------------------------------------------------
 
 def compute_weight_norm(model):
     return sum(
@@ -262,83 +285,68 @@ def compute_weight_norm(model):
         if p.requires_grad
     ) ** 0.5
 
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="CIFAR-10 ResNet-20 training — optimizer minima investigation",
+        description="CIFAR-10 training — ResNet-20 or ViT, optimizer minima investigation",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # --- Experiment ---
-    p.add_argument("--run_name",   type=str, default=None,
-                   help="Tag for this run (auto-generated from settings if None)")
-    p.add_argument("--output_dir", type=str, default="./runs",
-                   help="Directory for checkpoints and logs")
-    p.add_argument("--data_dir",   type=str, default="./data",
-                   help="CIFAR-10 download/cache directory")
-    p.add_argument("--seed",       type=int, default=42,
-                   help="Global random seed")
+    p.add_argument("--run_name",   type=str, default=None)
+    p.add_argument("--output_dir", type=str, default="./runs")
+    p.add_argument("--data_dir",   type=str, default="./data")
+    p.add_argument("--seed",       type=int, default=42)
+
+    # --- Model ---
+    p.add_argument("--model", type=str, default="resnet20",
+                   choices=["resnet20", "vit"],
+                   help="Model architecture")
 
     # --- Training ---
     p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=4)
-    p.add_argument("--label_smoothing", type=float, default=0.0,
-                   help="Label-smoothing factor for cross-entropy (0 = off)")
-    p.add_argument("--patience", type=int, default=20,
-                    help="Early stopping patience in epochs")
+    p.add_argument("--label_smoothing", type=float, default=0.0)
+    p.add_argument("--patience",    type=int,   default=20)
+    p.add_argument("--augment",     action="store_true",
+                   help="Enable RandAugment (strongly recommended for ViT)")
 
     # --- Optimizer ---
     p.add_argument("--optimizer", type=str, default="sgd",
-                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "muon"],
-                   help="Optimizer to use")
-    p.add_argument("--lr",           type=float, default=0.1,  help="Learning rate")
-    p.add_argument("--weight_decay", type=float, default=1e-4, help="L2 weight decay")
-    # SGD / SAM-SGD
-    p.add_argument("--momentum",  type=float, default=0.9,  help="SGD momentum")
-    p.add_argument("--nesterov",  action="store_true",      help="Nesterov momentum")
-    # Adam / AdamW
-    p.add_argument("--beta1", type=float, default=0.9,   help="Adam beta1")
-    p.add_argument("--beta2", type=float, default=0.999, help="Adam beta2")
-    p.add_argument("--eps",   type=float, default=1e-8,  help="Adam epsilon")
-    # RMSprop
-    p.add_argument("--alpha", type=float, default=0.99, help="RMSprop smoothing constant")
-    # LBFGS specific
-    p.add_argument("--max_iter",        type=int,   default=20,
-                help="Max iterations per step for L-BFGS")
-    p.add_argument("--history_size",    type=int,   default=100,
-                help="L-BFGS history size")
-    p.add_argument("--line_search_fn",  type=str,   default="strong_wolfe",
-                choices=["strong_wolfe", "none"],
-                help="Line search for L-BFGS (strong_wolfe strongly recommended)")
-    # SAM specific
-    p.add_argument("--rho",           type=float, default=0.05, help="SAM neighbourhood size")
-    p.add_argument("--adaptive_sam",  action="store_true",      help="Use adaptive SAM (ASAM)")
+                   choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "muon"])
+    p.add_argument("--lr",           type=float, default=0.1)
+    p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--momentum",     type=float, default=0.9)
+    p.add_argument("--nesterov",     action="store_true")
+    p.add_argument("--beta1", type=float, default=0.9)
+    p.add_argument("--beta2", type=float, default=0.999)
+    p.add_argument("--eps",   type=float, default=1e-8)
+    p.add_argument("--alpha", type=float, default=0.99)
+    p.add_argument("--lr_adamw",     type=float, default=3e-4,
+                   help="AdamW LR for the auxiliary optimizer in Muon")
+    p.add_argument("--rho",          type=float, default=0.05)
+    p.add_argument("--adaptive_sam", action="store_true")
     p.add_argument("--base_optimizer", type=str, default="sgd",
-                   choices=["sgd", "adam", "adamw"],
-                   help="Base optimizer for SAM")
+                   choices=["sgd", "adam", "adamw"])
 
     # --- Scheduler ---
     p.add_argument("--scheduler", type=str, default="none",
-                   choices=["none", "step", "cosine", "warmup_cosine", "cyclic"],
-                   help="LR scheduler")
-    p.add_argument("--lr_milestones", type=int, nargs="+", default=None,
-                   help="Epochs for MultiStepLR decay (scheduler=step)")
-    p.add_argument("--lr_gamma",     type=float, default=0.1,
-                   help="Decay factor for MultiStepLR")
-    p.add_argument("--min_lr",       type=float, default=0.0,
-                   help="Minimum LR for cosine/cyclic schedulers")
-    p.add_argument("--warmup_epochs", type=int, default=5,
-                   help="Warm-up epochs for warmup_cosine scheduler")
+                   choices=["none", "step", "cosine", "cosine_warmup"],
+                   help="cosine_warmup strongly recommended for ViT")
+    p.add_argument("--warmup_epochs",  type=int,   default=10,
+                   help="Linear warmup epochs (used with cosine_warmup)")
+    p.add_argument("--lr_milestones",  type=int,   nargs="+", default=None)
+    p.add_argument("--lr_gamma",       type=float, default=0.1)
+    p.add_argument("--min_lr",         type=float, default=0.0)
 
     # --- Checkpointing ---
-    p.add_argument("--save_every",   type=int, default=10,
-                   help="Save a checkpoint every N epochs (0 = only best)")
-    p.add_argument("--resume",       type=str, default=None,
-                   help="Path to checkpoint to resume from")
+    p.add_argument("--save_every", type=int, default=10)
+    p.add_argument("--resume",     type=str, default=None)
 
     return p.parse_args()
 
@@ -350,67 +358,62 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Reproducibility
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # Auto-generate run name
     if args.run_name is None:
         extras = ""
         if args.optimizer == "sam":
             extras = f"_rho{args.rho}_base{args.base_optimizer}"
         elif args.optimizer == "sgd":
             extras = f"_mom{args.momentum}" + ("_nesterov" if args.nesterov else "")
+        elif args.model == "vit":
+            extras = ""
         args.run_name = (
-            f"{args.optimizer}{extras}_lr{args.lr}_wd{args.weight_decay}"
+            f"{args.model}_{args.optimizer}{extras}"
+            f"_lr{args.lr}_wd{args.weight_decay}"
             f"_bs{args.batch_size}_{args.scheduler}_seed{args.seed}"
         )
 
     out_dir = Path(args.output_dir) / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config
     with open(out_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
-    
+
     wandb.init(
         project="OptiML_Minima",
         name=args.run_name,
         config=vars(args),
     )
 
-    # Device
     device = torch.device(
         "cuda"  if torch.cuda.is_available() else
         "mps"   if torch.backends.mps.is_available() else
         "cpu"
     )
     print(f"\n{'='*60}")
-    print(f"  Run : {args.run_name}")
+    print(f"  Run    : {args.run_name}")
+    print(f"  Model  : {args.model}")
     print(f"  Device : {device}")
     print(f"{'='*60}\n")
 
-    # Data
     train_loader, val_loader, test_loader = get_dataloaders(
         args.data_dir, args.batch_size, args.num_workers,
+        augment=args.augment,
     )
 
-    # Model
-    model = ResNet20(num_classes=10).to(device)
-    print(f"ResNet-20 — {count_parameters(model):,} trainable parameters\n")
+    model = build_model(args).to(device)
+    print(f"{args.model} — {count_parameters(model):,} trainable parameters\n")
 
-    # Loss
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-
-    # Optimizer & scheduler
     optimizer = build_optimizer(model, args)
-    scheduler = build_scheduler(optimizer, args, steps_per_epoch=len(train_loader))
-    
-    # Optionally resume
+    scheduler = build_scheduler(optimizer, args)
+
     start_epoch = 0
     best_acc    = 0.0
-    best_loss = float("inf")
+    best_loss   = float("inf")
     history     = []
 
     if args.resume:
@@ -419,15 +422,11 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = ckpt["epoch"] + 1
         best_acc    = ckpt.get("best_acc", 0.0)
-        best_loss = ckpt.get("best_loss", float("inf"))
+        best_loss   = ckpt.get("best_loss", float("inf"))
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
-    
-    patience = args.patience
-    epochs_no_improve = 0
 
-    # ---------- Training loop ----------
-    step_scheduler_per_batch = args.scheduler in ("warmup_cosine", "cyclic")
+    epochs_no_improve = 0
 
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
@@ -435,11 +434,10 @@ def main():
         train_loss, train_acc, grad_norm = train_epoch(
             model, train_loader, optimizer, criterion, device)
 
-        # Step schedulers that track epochs
-        if scheduler and not step_scheduler_per_batch:
+        if scheduler is not None:
             scheduler.step()
 
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        val_loss,  val_acc  = evaluate(model, val_loader,  criterion, device)
         test_loss, test_acc = evaluate(model, test_loader, criterion, device)
 
         elapsed = time.time() - t0
@@ -450,68 +448,66 @@ def main():
         )
 
         record = {
-            "epoch": epoch + 1,
-            "lr": current_lr,
-            "train_loss": round(train_loss, 6),
-            "train_acc":  round(train_acc,  4),
-            "val_loss":  round(val_loss,  6),
-            "val_acc":   round(val_acc,   4),
-            "test_loss":  round(test_loss,  6),
-            "test_acc":   round(test_acc,   4),
-            "time_s":     round(elapsed,    2),
-            "grad_norm": round(grad_norm, 6),
+            "epoch":       epoch + 1,
+            "lr":          current_lr,
+            "train_loss":  round(train_loss,  6),
+            "train_acc":   round(train_acc,   4),
+            "val_loss":    round(val_loss,    6),
+            "val_acc":     round(val_acc,     4),
+            "test_loss":   round(test_loss,   6),
+            "test_acc":    round(test_acc,    4),
+            "time_s":      round(elapsed,     2),
+            "grad_norm":   round(grad_norm,   6),
             "weight_norm": round(compute_weight_norm(model), 6),
         }
         history.append(record)
-        wandb.log(record) 
+        wandb.log(record)
 
         print(
             f"Epoch {epoch+1:>3}/{args.epochs} | "
             f"LR {current_lr:.2e} | "
             f"Train loss {train_loss:.4f}  acc {train_acc:5.2f}% | "
-            f"Validation loss {val_loss:.4f}  acc {val_acc:5.2f}% | "
-            f"Test loss {test_loss:.4f}  acc {test_acc:5.2f}% | "
+            f"Val   loss {val_loss:.4f}  acc {val_acc:5.2f}% | "
+            f"Test  loss {test_loss:.4f}  acc {test_acc:5.2f}% | "
             f"{elapsed:.1f}s"
         )
 
-        # Save best checkpoint
         is_best = val_acc > best_acc
         if is_best:
-            best_acc = val_acc
-            best_loss = val_loss 
+            best_acc  = val_acc
+            best_loss = val_loss
             epochs_no_improve = 0
             torch.save({
-                "epoch": epoch,
-                "model": model.state_dict(),
+                "epoch":     epoch,
+                "model":     model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "best_acc": best_acc,
+                "best_acc":  best_acc,
                 "best_loss": best_loss,
-                "history": history,
-                "args": vars(args),
+                "history":   history,
+                "args":      vars(args),
             }, out_dir / "best.pt")
         else:
             epochs_no_improve += 1
-            if epochs_no_improve >= patience:
+            if epochs_no_improve >= args.patience:
                 print(f"\nEarly stopping triggered after {epoch+1} epochs.")
                 break
 
-        # Periodic checkpoint
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
             torch.save({
-                "epoch": epoch,
-                "model": model.state_dict(),
+                "epoch":     epoch,
+                "model":     model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "best_acc": best_acc,
-                "history": history,
-                "args": vars(args),
+                "best_acc":  best_acc,
+                "history":   history,
+                "args":      vars(args),
             }, out_dir / f"epoch_{epoch+1:03d}.pt")
 
-        # Flush history to disk (useful for live monitoring)
         with open(out_dir / "history.json", "w") as f:
             json.dump(history, f, indent=2)
 
     print(f"\n✓ Training complete. Best val accuracy: {best_acc:.2f}%")
     print(f"  Outputs saved to: {out_dir}\n")
+
     artifact = wandb.Artifact(
         name=f"model-{args.run_name}",
         type="model",
@@ -519,7 +515,6 @@ def main():
     )
     artifact.add_file(str(out_dir / "best.pt"))
     wandb.log_artifact(artifact)
-
     wandb.finish()
 
 
