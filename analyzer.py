@@ -15,6 +15,8 @@ import argparse
 
 from hessian.hessian import hessian
 
+from itertools import islice
+
 
 # -----------------------------
 # Model and data utilities
@@ -286,10 +288,15 @@ def sharpness_curve(
 # Hessian metrics
 # -----------------------------
 
-def get_one_hessian_batch(loader, device):
-    """PyHessian usually computes Hessian metrics from a representative batch."""
+"""def get_one_hessian_batch(loader, device):
     x, y = next(iter(loader))
-    return x.to(device), y.to(device)
+    return x.to(device), y.to(device)"""
+
+def get_hessian_batches(loader, device, num_batches=8):
+    batches = []
+    for x, y in islice(loader, num_batches):
+        batches.append((x.to(device), y.to(device)))
+    return batches
 
 
 def compute_hessian_metrics(
@@ -310,7 +317,7 @@ def compute_hessian_metrics(
     """
     model.eval()
 
-    inputs, targets = get_one_hessian_batch(trainloader, device)
+    inputs, targets = get_hessian_batches(trainloader, device)
 
     model.zero_grad(set_to_none=True)
 
