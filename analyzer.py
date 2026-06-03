@@ -15,6 +15,8 @@ import argparse
 
 from hessian.hessian import hessian
 
+from itertools import islice
+
 
 # -----------------------------
 # Model and data utilities
@@ -46,20 +48,29 @@ def get_loaders(batch_size=128):
 # -----------------------------
 
 @torch.no_grad()
-def full_loss(model, loader, criterion, device):
-    """Compute average loss over an entire dataset."""
+def full_loss_and_accuracy(model, loader, criterion, device):
+    """Compute average loss and accuracy over an entire dataset."""
     model.eval()
-    total_loss, total = 0.0, 0
+
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
     for x, y in loader:
         x, y = x.to(device), y.to(device)
+
         logits = model(x)
         loss = criterion(logits, y)
 
         total_loss += loss.item() * y.size(0)
-        total += y.size(0)
 
-    return total_loss / total
+        preds = logits.argmax(dim=1)
+        total_correct += (preds == y).sum().item()
+
+        total_samples += y.size(0)
+
+    return total_loss / total_samples, total_correct / total_samples
+    
 
 
 def gradient_norm(model, loader, criterion, device, max_batches=None):
@@ -139,19 +150,48 @@ def _normalize_like_parameter(direction_tensor, parameter_tensor, eps=1e-12):
     return (direction_tensor / (d_norm + eps)) * (p_norm + eps)
 
 
-def sample_scale_invariant_direction_like(model):
+def sample_scale_invariant_direction_like(
+    model,
+    include_bias=False,
+    include_bn_affine=False,
+):
     """
     Sample a filter-normalized direction in parameter space.
 
-    This is preferable to a single global unit-norm direction because it is much less
-    sensitive to arbitrary rescaling of layers or filters.
+    Parameters
+    ----------
+    include_bias : bool
+        Whether to perturb bias parameters.
+
+    include_bn_affine : bool
+        Whether to perturb BatchNorm affine parameters
+        (weight/gamma and bias/beta).
     """
     direction = []
 
-    for p in model.parameters():
-        if p.requires_grad:
-            d = torch.randn_like(p)
-            d = _normalize_like_parameter(d, p)
+    for module_name, module in model.named_modules():
+
+        is_bn = isinstance(
+            module,
+            (
+                nn.BatchNorm1d,
+                nn.BatchNorm2d,
+                nn.BatchNorm3d,
+            ),
+        )
+
+
+        for param_name, p in module.named_parameters(recurse=False):
+            d = torch.zeros_like(p)
+            # Check if trainable parameter
+            if p.requires_grad:
+                # Check if bias parameter
+                if include_bias or param_name != "bias":
+                    # Check if batch norm affine parameter
+                    is_bn_affine = is_bn and param_name in {"weight", "bias"}
+                    if include_bn_affine or not is_bn_affine:
+                        d = torch.randn_like(p)
+                        d = _normalize_like_parameter(d, p)
             direction.append(d)
 
     return direction
@@ -166,11 +206,8 @@ def add_direction_to_model(model, base_state, direction, relative_scale):
     """
     model.load_state_dict(base_state)
 
-    idx = 0
-    for p in model.parameters():
-        if p.requires_grad:
-            p.add_(relative_scale * direction[idx])
-            idx += 1
+    for p, d in zip(model.parameters(), direction):
+        p.add_(relative_scale * d)
 
 
 # -----------------------------
@@ -192,7 +229,7 @@ def max_loss_in_neighbourhood(
 
     """
     base_state = copy.deepcopy(model.state_dict())
-    base_loss = full_loss(model, loader, criterion, device)
+    base_loss, _ = full_loss_and_accuracy(model, loader, criterion, device)
 
     max_loss = -math.inf
     max_delta = None
@@ -204,7 +241,7 @@ def max_loss_in_neighbourhood(
 
         add_direction_to_model(model, base_state, direction, scale)
 
-        loss = full_loss(model, loader, criterion, device)
+        loss, _ = full_loss_and_accuracy(model, loader, criterion, device)
         delta = loss - base_loss
         sharpness_deltas.append(delta)
 
@@ -251,10 +288,16 @@ def sharpness_curve(
 # Hessian metrics
 # -----------------------------
 
-def get_one_hessian_batch(loader, device):
-    """PyHessian usually computes Hessian metrics from a representative batch."""
+"""def get_one_hessian_batch(loader, device):
     x, y = next(iter(loader))
-    return x.to(device), y.to(device)
+    return x.to(device), y.to(device)"""
+
+def get_hessian_batch_tensor(loader, device, num_batches=8):
+    xs, ys = [], []
+    for x, y in islice(loader, num_batches):
+        xs.append(x)
+        ys.append(y)
+    return torch.cat(xs, dim=0).to(device), torch.cat(ys, dim=0).to(device)
 
 
 def compute_hessian_metrics(
@@ -275,7 +318,7 @@ def compute_hessian_metrics(
     """
     model.eval()
 
-    inputs, targets = get_one_hessian_batch(trainloader, device)
+    inputs, targets = get_hessian_batch_tensor(trainloader, device)
 
     model.zero_grad(set_to_none=True)
 
@@ -468,9 +511,14 @@ def analyze(
     # Compute metrics
     print("-" * 50)
     print("Starting analysis...")
-    train_loss = full_loss(model, trainloader, criterion, device)
-    test_loss = full_loss(model, testloader, criterion, device)
-    print("Losses computed. Computing gradient norm...")
+    train_loss, train_accuracy = full_loss_and_accuracy(
+        model, trainloader, criterion, device
+    )
+
+    test_loss, test_accuracy = full_loss_and_accuracy(
+        model, testloader, criterion, device
+    )
+    print("Accuracies and Losses computed. Computing gradient norm...")
     grad_norm = gradient_norm(
         model=model,
         loader=trainloader,
@@ -504,7 +552,10 @@ def analyze(
         # Results
         "train_loss": train_loss,
         "test_loss": test_loss,
-        "train_test_gap": test_loss - train_loss,
+        "train_accuracy": train_accuracy,
+        "test_accuracy": test_accuracy,
+        "train_test_loss_gap": test_loss - train_loss,
+        "train_test_accuracy_gap": train_accuracy - test_accuracy,
         "gradient_norm_full_train_dataset": grad_norm,
         "hessian_metrics": hessian_metrics,
         "scale_invariant_sharpness_by_radius": sharpness_by_radius,
