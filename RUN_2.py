@@ -324,7 +324,7 @@ def parse_args():
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=4)
     p.add_argument("--label_smoothing", type=float, default=0.0)
-    p.add_argument("--patience",    type=int,   default=20)
+    p.add_argument("--patience",    type=int,   default=200)
     p.add_argument("--augment",     action="store_true",
                    help="Enable RandAugment (strongly recommended for ViT)")
 
