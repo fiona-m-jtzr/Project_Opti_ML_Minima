@@ -149,7 +149,7 @@ def build_optimizer(model, args):
             # Always exclude these regardless of model
             exclude_keywords = ["bias", "bn", "norm",        # norms & biases
                                  "cls_token", "pos_embed",    # ViT special tokens
-                                 "patch_embed.proj"]                    
+                                 "patch_embed.proj", "head"]                    
             return not any(kw in name for kw in exclude_keywords)
 
         muon_params = [p for name, p in model.named_parameters()
