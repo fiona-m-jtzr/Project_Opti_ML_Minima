@@ -1,7 +1,7 @@
 #!/bin/bash
 
 for lr in 0.01 0.05 0.1; do
-    for bs in 128 256; do
+    for bs in 64 128 256; do
         lr_tag=$(echo $lr | tr '.' 'p')
         python csub.py \
             -n "train-sgd-vit-lr${lr_tag}-bs${bs}" \
