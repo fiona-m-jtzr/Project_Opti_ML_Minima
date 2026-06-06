@@ -160,7 +160,7 @@ def build_optimizer(model, args):
         param_groups = [
             dict(params=muon_params, lr=args.lr, momentum=args.momentum,
                 weight_decay=args.weight_decay, use_muon=True),
-            dict(params=adam_params, lr=args.lr_adamw,
+            dict(params=adam_params, lr=args.lr_muon_adam,
                 betas=(args.beta1, args.beta2), eps=args.eps,
                 weight_decay=args.weight_decay, use_muon=False),
         ]
@@ -336,13 +336,13 @@ def parse_args():
     p.add_argument("--beta2", type=float, default=0.999)
     p.add_argument("--eps",   type=float, default=1e-8)
     p.add_argument("--alpha", type=float, default=0.99)
-    p.add_argument("--lr_muon_adamw",     type=float, default=5e-4)
+    p.add_argument("--lr_muon_adam",     type=float, default=5e-4)
     p.add_argument("--rho",          type=float, default=0.05)
     p.add_argument("--adaptive_sam", action="store_true")
     p.add_argument("--base_optimizer", type=str, default="sgd",
                    choices=["sgd", "adam", "adamw"])
 
-    # --- Scheduler ---
+    # --- Scheduler ---""
     p.add_argument("--scheduler", type=str, default="none",
                    choices=["none", "step", "cosine", "cosine_warmup"])
     p.add_argument("--warmup_epochs",  type=int,   default=10,
