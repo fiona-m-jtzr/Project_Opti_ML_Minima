@@ -12,6 +12,97 @@ import wandb
 PROJECT = "OptiML_Minima"
 
 
+def average_numeric(values):
+    values = [v for v in values if isinstance(v, (int, float))]
+    return sum(values) / len(values) if values else None
+
+
+
+def average_sharpness_curves(group):
+    curves = [r["scale_invariant_sharpness_by_radius"] for r in group]
+
+    averaged = []
+
+    for i in range(len(curves[0])):
+        radius = curves[0][i]["relative_radius"]
+
+        normalized_values = []
+
+        for run, curve in zip(group, curves):
+            train_loss = run.get("train_loss")
+
+            if train_loss is None or train_loss == 0:
+                continue
+
+            normalized_values.append(
+                curve[i]["sharpness_delta"] / train_loss
+            )
+
+        averaged.append({
+            "relative_radius": radius,
+            "normalized_sharpness_delta": average_numeric(
+                normalized_values
+            ),
+        })
+
+    return averaged
+
+def group_key_without_seed(result):
+    meta = parse_run_name(result_name(result))
+    return (
+        meta["optimizer"],
+        meta["lr"],
+        meta["bs"],
+        meta["momentum"],
+        meta["nesterov"],
+        meta["schedule"],
+    )
+
+
+def average_results_across_seeds(results):
+    grouped = {}
+
+    for result in results:
+        grouped.setdefault(group_key_without_seed(result), []).append(result)
+
+    averaged = []
+
+    for key, group in grouped.items():
+        base = dict(group[0])
+
+        base["source_run_name"] = result_name(group[0]).replace(
+            f"_seed{parse_run_name(result_name(group[0]))['seed']}", ""
+        )
+        base["_num_seeds"] = len(group)
+
+        for metric in [
+            "train_loss",
+            "test_loss",
+            "train_accuracy",
+            "test_accuracy",
+            "train_test_loss_gap",
+            "train_test_accuracy_gap",
+            "gradient_norm_full_train_dataset",
+        ]:
+            base[metric] = average_numeric([r.get(metric) for r in group])
+
+        base["hessian_metrics"] = dict(base.get("hessian_metrics", {}))
+        for metric in [
+            "negative_curvature_ratio",
+            "normalized_top_eigenvalue",
+            "normalized_trace",
+        ]:
+            base["hessian_metrics"][metric] = average_numeric([
+                get_nested(r, "hessian_metrics", metric) for r in group
+            ])
+
+        base["averaged_sharpness_curve"] = average_sharpness_curves(group)
+
+        averaged.append(base)
+
+    return averaged
+
+
 def load_json_from_artifact(artifact):
     artifact_dir = Path(artifact.download())
     json_files = list(artifact_dir.rglob("*.json"))
@@ -210,13 +301,10 @@ def plot_sharpness_curves(ax, results, meta, combo_color_map):
         if loss is None or loss == 0:
             continue
 
-        radii = [p.get("relative_radius") for p in curve]
-        deltas = [
-            p.get("sharpness_delta") / loss
-            if p.get("sharpness_delta") is not None
-            else None
-            for p in curve
-        ]
+        curve = result.get("averaged_sharpness_curve", [])
+
+        radii = [p["relative_radius"] for p in curve]
+        deltas = [p["normalized_sharpness_delta"] for p in curve]
 
         combo = (params["optimizer"], params["bs"], params["lr"])
 
@@ -369,6 +457,7 @@ def main():
     args = parser.parse_args()
 
     results = collect_analysis_results()
+    results = average_results_across_seeds(results)
     plot_results(results, args.output)
 
 
