@@ -203,7 +203,6 @@ def build_scheduler(optimizer, args, steps_per_epoch):
         return torch.optim.lr_scheduler.CosineAnnealingLR(
             base_opt, T_max=args.epochs, eta_min=args.min_lr)
     elif sched == "cosine_warmup":
-        # Linear warmup + cosine decay — strongly recommended for ViT
         def lr_lambda(epoch):
             if epoch < args.warmup_epochs:
                 return (epoch + 1) / args.warmup_epochs
@@ -315,8 +314,7 @@ def parse_args():
 
     # --- Model ---
     p.add_argument("--model", type=str, default="resnet20",
-                   choices=["resnet20", "vit"],
-                   help="Model architecture")
+                   choices=["resnet20", "vit"])
 
 
     # --- Training ---
@@ -325,21 +323,20 @@ def parse_args():
     p.add_argument("--num_workers", type=int,   default=4)
     p.add_argument("--label_smoothing", type=float, default=0.0)
     p.add_argument("--patience",    type=int,   default=200)
-    p.add_argument("--augment",     action="store_true",
-                   help="Enable RandAugment (strongly recommended for ViT)")
+    p.add_argument("--augment",     action="store_true")
 
     # --- Optimizer ---
     p.add_argument("--optimizer", type=str, default="sgd",
                    choices=["sgd", "adam", "adamw", "rmsprop", "adagrad", "sam", "muon"])
     p.add_argument("--lr",           type=float, default=0.1)
-    p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--momentum",     type=float, default=0.9)
     p.add_argument("--nesterov",     action="store_true")
     p.add_argument("--beta1", type=float, default=0.9)
     p.add_argument("--beta2", type=float, default=0.999)
     p.add_argument("--eps",   type=float, default=1e-8)
     p.add_argument("--alpha", type=float, default=0.99)
-    p.add_argument("--lr_adamw",     type=float, default=3e-4)
+    p.add_argument("--lr_muon_adamw",     type=float, default=5e-4)
     p.add_argument("--rho",          type=float, default=0.05)
     p.add_argument("--adaptive_sam", action="store_true")
     p.add_argument("--base_optimizer", type=str, default="sgd",
