@@ -25,23 +25,35 @@ def load_json_from_artifact(artifact):
 
 def collect_analysis_results():
     api = wandb.Api()
-    runs = api.runs(PROJECT)
+    entity = api.default_entity
+    runs = api.runs(f"{entity}/{PROJECT}")
 
-    results = []
+    latest_by_collection = {}
 
     for run in runs:
         for artifact in run.logged_artifacts():
             if artifact.type != "analysis":
                 continue
 
-            try:
-                data = load_json_from_artifact(artifact)
-                data["_wandb_run_name"] = run.name
-                data["_artifact_name"] = artifact.name
-                results.append(data)
-                print(f"Loaded {artifact.name}")
-            except Exception as e:
-                print(f"Skipping {artifact.name}: {e}")
+            # e.g. model-sgd_lr0.1_seed42-minimum-analysis:v3
+            collection = artifact.name.split(":")[0]
+
+            if (
+                collection not in latest_by_collection
+                or artifact.created_at > latest_by_collection[collection].created_at
+            ):
+                latest_by_collection[collection] = artifact
+
+    results = []
+
+    for artifact in latest_by_collection.values():
+        try:
+            data = load_json_from_artifact(artifact)
+            data["_artifact_name"] = artifact.name
+            results.append(data)
+            print(f"Loaded latest {artifact.name}")
+        except Exception as e:
+            print(f"Skipping {artifact.name}: {e}")
 
     return results
 
@@ -284,7 +296,7 @@ def plot_results(results, output_path):
     bar_metric(
         axes[2],
         meta,
-        [r.get("train_test_gap") for r in results],
+        [r.get("train_test_loss_gap") for r in results],
         "Train-Test Gap",
         "test loss - train loss",
         optimizer_color_map,
