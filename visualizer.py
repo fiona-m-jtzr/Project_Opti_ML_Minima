@@ -194,8 +194,17 @@ def plot_sharpness_curves(ax, results, meta, combo_color_map):
         if not curve:
             continue
 
+        loss = result.get("train_loss")  # or "test_loss"
+        if loss is None or loss == 0:
+            continue
+
         radii = [p.get("relative_radius") for p in curve]
-        deltas = [p.get("sharpness_delta") for p in curve]
+        deltas = [
+            p.get("sharpness_delta") / loss
+            if p.get("sharpness_delta") is not None
+            else None
+            for p in curve
+        ]
 
         combo = (params["optimizer"], params["bs"], params["lr"])
 
@@ -209,10 +218,10 @@ def plot_sharpness_curves(ax, results, meta, combo_color_map):
             label=f"{params['optimizer']} | bs={params['bs']} | lr={params['lr']:g}",
         )
 
-    ax.set_title("Scale-Invariant Sharpness by Radius")
+    ax.set_title("Loss-Normalized Scale-Invariant Sharpness by Radius")
     ax.set_xscale("log")
     ax.set_xlabel("relative radius")
-    ax.set_ylabel("sharpness delta")
+    ax.set_ylabel("sharpness delta / train loss")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=7)
 
