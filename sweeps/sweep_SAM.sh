@@ -17,10 +17,10 @@ for rho in 0.01 0.05 0.1; do
             --beta2 0.999 \
             --weight_decay 0.0 \
             --batch_size 256 \
-            --epochs 400 \
+            --epochs 600 \
             --scheduler cosine_warmup \
             --warmup_epochs 15 \
-            --patience 400 \
+            --patience 300 \
             --augment"
 done
 

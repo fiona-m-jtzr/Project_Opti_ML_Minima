@@ -15,10 +15,10 @@ python csub.py \
         --beta2 0.999 \
         --weight_decay 0.0 \
         --momentum 0.95 \
-        --epochs 400 \
+        --epochs 600 \
         --scheduler cosine_warmup \
         --warmup_epochs 15 \
-        --patience 400 \
+        --patience 300 \
         --augment"
 
 

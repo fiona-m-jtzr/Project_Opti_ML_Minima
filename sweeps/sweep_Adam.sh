@@ -15,10 +15,10 @@ for beta2 in 0.99 0.999 0.9999; do
             --beta1 0.9 \
             --beta2 $beta2 \
             --weight_decay 0.0 \
-            --epochs 400 \
+            --epochs 600 \
             --scheduler cosine_warmup \
             --warmup_epochs 15 \
-            --patience 400 \
+            --patience 300 \
             --augment"
 done
 

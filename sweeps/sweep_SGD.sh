@@ -16,10 +16,10 @@ for lr in 0.01 0.05 0.1; do
                 --momentum 0.9 \
                 --nesterov \
                 --weight_decay 0.0 \
-                --epochs 400 \
+                --epochs 600 \
                 --scheduler cosine_warmup \
                 --warmup_epochs 15 \
-                --patience 400 \
+                --patience 300 \
                 --augment"
     done
 done
