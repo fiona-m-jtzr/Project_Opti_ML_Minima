@@ -254,11 +254,11 @@ def format_param_label(params):
 
 
 def bar_metric(ax, meta, values, title, ylabel, color_map):
-    clean = [
+    clean = sorted([
         (params, value)
         for params, value in zip(meta, values)
         if value is not None
-    ]
+    ], key=lambda x: x[1])
 
     if not clean:
         ax.set_title(title)
@@ -281,7 +281,7 @@ def bar_metric(ax, meta, values, title, ylabel, color_map):
     ymin, ymax = ax.get_ylim()
     offset = 0.015 * (ymax - ymin)
 
-    for bar, params, value in zip(bars, params_list, vals):
+    """for bar, params, value in zip(bars, params_list, vals):
         y = value + offset if value >= 0 else value - offset
         va = "bottom" if value >= 0 else "top"
 
@@ -293,10 +293,10 @@ def bar_metric(ax, meta, values, title, ylabel, color_map):
             va=va,
             fontsize=7,
             rotation=0,
-        )
+        )"""
 
 
-def plot_sharpness_curves(ax, results, meta, combo_color_map):
+def plot_sharpness_curves(ax, results, meta, optimizer_color_map):
     for result, params in zip(results, meta):
         curve = result.get("scale_invariant_sharpness_by_radius", [])
         if not curve:
@@ -311,7 +311,7 @@ def plot_sharpness_curves(ax, results, meta, combo_color_map):
         radii = [p["relative_radius"] for p in curve]
         deltas = [p["normalized_sharpness_delta"] for p in curve]
 
-        combo = (params["optimizer"], params["bs"], params["lr"])
+        #combo = (params["optimizer"], params["bs"], params["lr"])
 
         ax.plot(
             radii,
@@ -319,7 +319,7 @@ def plot_sharpness_curves(ax, results, meta, combo_color_map):
             marker="o",
             linewidth=2,
             alpha=0.9,
-            color=combo_color_map[combo],
+            color=optimizer_color_map[params["optimizer"]],
             label=f"{params['optimizer']} | bs={params['bs']} | lr={params['lr']:g}",
         )
 
@@ -365,7 +365,7 @@ def plot_results(results, output_path):
     optimizer_color_map = build_optimizer_color_map(meta)
     combo_color_map = build_combo_color_map(meta)
 
-    fig, axes = plt.subplots(4, 2, figsize=(20, 18))
+    fig, axes = plt.subplots(5, 2, figsize=(20, 18))
     axes = axes.flatten()
 
     bar_metric(
@@ -398,6 +398,33 @@ def plot_results(results, output_path):
     bar_metric(
         axes[3],
         meta,
+        [r.get("train_accuracy") for r in results],
+        "Train Accuracy",
+        "accuracy",
+        optimizer_color_map,
+    )
+
+    bar_metric(
+        axes[4],
+        meta,
+        [r.get("test_accuracy") for r in results],
+        "Test Accuracy",
+        "accuracy",
+        optimizer_color_map,
+    )
+
+    bar_metric(
+        axes[5],
+        meta,
+        [r.get("train_test_accuracy_gap") for r in results],
+        "Train-Test Accuracy Gap",
+        "train accuracy - test accuracy",
+        optimizer_color_map,
+    )
+
+    bar_metric(
+        axes[6],
+        meta,
         [r.get("gradient_norm_full_train_dataset") for r in results],
         "Gradient Norm",
         "gradient norm",
@@ -405,19 +432,7 @@ def plot_results(results, output_path):
     )
 
     bar_metric(
-        axes[4],
-        meta,
-        [
-            get_nested(r, "hessian_metrics", "negative_curvature_ratio")
-            for r in results
-        ],
-        "Negative Curvature Ratio",
-        "ratio",
-        optimizer_color_map,
-    )
-
-    bar_metric(
-        axes[5],
+        axes[7],
         meta,
         [
             get_nested(r, "hessian_metrics", "normalized_top_eigenvalue")
@@ -429,7 +444,7 @@ def plot_results(results, output_path):
     )
 
     bar_metric(
-        axes[6],
+        axes[8],
         meta,
         [
             get_nested(r, "hessian_metrics", "normalized_trace")
@@ -441,10 +456,10 @@ def plot_results(results, output_path):
     )
 
     plot_sharpness_curves(
-        axes[7],
+        axes[9],
         results,
         meta,
-        combo_color_map,
+        optimizer_color_map,
     )
 
     add_optimizer_legend(fig, optimizer_color_map)
