@@ -47,6 +47,10 @@ def average_sharpness_curves(group):
 
     return averaged
 
+def group_key_optimizer_only(result):
+    meta = parse_run_name(result_name(result))
+    return meta["optimizer"]
+
 def group_key_without_seed(result):
     meta = parse_run_name(result_name(result))
     return (
@@ -59,11 +63,12 @@ def group_key_without_seed(result):
     )
 
 
-def average_results_across_seeds(results):
+def average_results(results):
     grouped = {}
 
     for result in results:
-        grouped.setdefault(group_key_without_seed(result), []).append(result)
+        #grouped.setdefault(group_key_without_seed(result), []).append(result)
+        grouped.setdefault(group_key_optimizer_only(result), []).append(result)
 
     averaged = []
 
@@ -457,7 +462,7 @@ def main():
     args = parser.parse_args()
 
     results = collect_analysis_results()
-    results = average_results_across_seeds(results)
+    results = average_results(results)
     plot_results(results, args.output)
 
 
