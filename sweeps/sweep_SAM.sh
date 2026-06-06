@@ -42,9 +42,7 @@ for rho in 0.01 0.05 0.1; do
             --nesterov \
             --weight_decay 0.0 \
             --batch_size 128 \
-            --epochs 200 \
-            --scheduler cosine_warmup \
-            --warmup_epochs 5 \
-            --patience 200 \
-            --augment"
+            --epochs 400 \
+            --scheduler cosine \
+            --patience 100"
 done

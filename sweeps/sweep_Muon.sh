@@ -36,10 +36,8 @@ for bs in 64 128 256; do
             --batch_size $bs \
             --momentum 0.95 \
             --weight_decay 0.0 \
-            --epochs 200 \
-            --scheduler cosine_warmup \
-            --warmup_epochs 5 \
-            --patience 200 \
-            --augment"
+            --epochs 400 \
+            --scheduler cosine \
+            --patience 100"
 done
 

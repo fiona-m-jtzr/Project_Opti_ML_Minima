@@ -421,6 +421,7 @@ def main():
     start_epoch = 0
     best_acc    = 0.0
     best_loss   = float("inf")
+    best_grad   = float("inf")
     history     = []
 
     if args.resume:
@@ -430,6 +431,7 @@ def main():
         start_epoch = ckpt["epoch"] + 1
         best_acc    = ckpt.get("best_acc", 0.0)
         best_loss   = ckpt.get("best_loss", float("inf"))
+        best_grad   = ckpt.get("best_grad", float("inf")) 
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
 
@@ -465,6 +467,7 @@ def main():
             "test_acc":    round(test_acc,    4),
             "time_s":      round(elapsed,     2),
             "grad_norm":   round(grad_norm,   6),
+            "best_grad":   round(min(best_grad, grad_norm), 6),
             "weight_norm": round(compute_weight_norm(model), 6),
         }
         history.append(record)
@@ -479,6 +482,19 @@ def main():
             f"{elapsed:.1f}s"
         )
 
+        if (epoch + 1) > args.warmup_epochs:
+            is_flattest = grad_norm < best_grad
+            if is_flattest:
+                best_grad = grad_norm
+                torch.save({
+                    "epoch":       epoch,
+                    "model":       model.state_dict(),
+                    "optimizer":   optimizer.state_dict(),
+                    "grad_norm":   grad_norm,
+                    "val_acc":     val_acc,
+                    "args":        vars(args),
+                }, out_dir / "min_grad.pt")
+
         is_best = val_acc > best_acc
         if is_best:
             best_acc  = val_acc
@@ -490,6 +506,7 @@ def main():
                 "optimizer": optimizer.state_dict(),
                 "best_acc":  best_acc,
                 "best_loss": best_loss,
+                "best_grad": best_grad,
                 "history":   history,
                 "args":      vars(args),
             }, out_dir / "best.pt")
@@ -505,6 +522,7 @@ def main():
                 "model":     model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "best_acc":  best_acc,
+                "best_grad": best_grad,
                 "history":   history,
                 "args":      vars(args),
             }, out_dir / f"epoch_{epoch+1:03d}.pt")
@@ -518,9 +536,11 @@ def main():
     artifact = wandb.Artifact(
         name=f"model-{args.run_name}",
         type="model",
-        metadata={"best_val_acc": best_acc, "best_val_loss": best_loss},
+        metadata={"best_val_acc": best_acc, "best_val_loss": best_loss, "min_grad_norm": best_grad},
     )
     artifact.add_file(str(out_dir / "best.pt"))
+    if (out_dir / "min_grad.pt").exists():
+        artifact.add_file(str(out_dir / "min_grad.pt"))
     wandb.log_artifact(artifact)
     wandb.finish()
 

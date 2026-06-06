@@ -1,8 +1,6 @@
 #!/bin/bash
 
-#!/bin/bash
-
-for lr in 0.005 0.01 0.05; do
+for lr in 0.01 0.05 0.1; do
     for bs in 128 256; do
         lr_tag=$(echo $lr | tr '.' 'p')
         python csub.py \
@@ -20,7 +18,7 @@ for lr in 0.005 0.01 0.05; do
                 --weight_decay 0.0 \
                 --epochs 400 \
                 --scheduler cosine_warmup \
-                --warmup_epochs 20 \
+                --warmup_epochs 15 \
                 --patience 400 \
                 --augment"
     done
@@ -42,10 +40,9 @@ for lr in 0.01 0.05 0.1; do
                 --batch_size $bs \
                 --momentum 0.9 \
                 --nesterov \
-                --weight_decay 1e-4 \
+                --weight_decay 0.0 \
                 --epochs 400 \
                 --scheduler cosine \
-                --patience 100 \
-                --augment"
+                --patience 100"
     done
 done
