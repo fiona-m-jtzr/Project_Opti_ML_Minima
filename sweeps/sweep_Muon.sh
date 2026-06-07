@@ -18,9 +18,7 @@ python csub.py \
         --epochs 600 \
         --scheduler cosine_warmup \
         --warmup_epochs 15 \
-        --patience 300 \
-        --augment"
-
+        --seed 1"
 
 for bs in 64 128 256; do
     python csub.py \
@@ -32,12 +30,11 @@ for bs in 64 128 256; do
             --model resnet20 \
             --optimizer muon \
             --lr 0.02 \
-            --lr_muon_adamw 1e-3 \
+            --lr_muon_adam 1e-3 \
             --batch_size $bs \
             --momentum 0.95 \
             --weight_decay 0.0 \
             --epochs 400 \
             --scheduler cosine \
-            --patience 100"
+            --seed 1"
 done
-

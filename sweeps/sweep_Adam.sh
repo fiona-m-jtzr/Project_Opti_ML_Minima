@@ -18,10 +18,8 @@ for beta2 in 0.99 0.999 0.9999; do
             --epochs 600 \
             --scheduler cosine_warmup \
             --warmup_epochs 15 \
-            --patience 300 \
-            --augment"
+            --seed 1"
 done
-
 
 for beta2 in 0.99 0.999 0.9999; do
     beta2_tag=$(echo $beta2 | tr '.' 'p')
@@ -40,5 +38,5 @@ for beta2 in 0.99 0.999 0.9999; do
             --weight_decay 0.0 \
             --epochs 400 \
             --scheduler cosine \
-            --patience 100"
+            --seed 1"
 done
