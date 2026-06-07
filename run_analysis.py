@@ -6,8 +6,8 @@ import analyzer
 PROJECT = "OptiML_Minima"
 
 MODEL_PREFIXES = {
-    "resnet20": "model-resnet20_",
-    "vit": "model-vit_",
+    "resnet20": "model-FINAL_MODEL_resnet20_",
+    "vit": "model-FINAL_MODEL_vit_",
 }
 
 
@@ -16,8 +16,8 @@ def artifact_model_type(run_name):
     Infer the model type from a W&B artifact collection name.
 
     Expected typed names look like:
-      model-resnet20_muon_lr0.02_wd0.0_bs128_cosine_seed1
-      model-vit_sam_rho0.1_baseadam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1
+      model-FINAL_MODEL_resnet20_muon_lr0.02_wd0.0_bs128_cosine_seed1
+      model-FINAL_MODEL_vit_sam_rho0.1_baseadam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1
 
     Untyped legacy names like:
       model-sam_rho0.01_basesgd_lr0.1_wd0.0001_bs128_cosine_seed1
@@ -55,7 +55,7 @@ def parse_args():
         help=(
             "Which typed model artifacts to analyse. "
             "'all' means all known typed architectures only: "
-            "model-resnet20_* and model-vit_*. "
+            "model-FINAL_MODEL_resnet20_* and model-FINAL_MODEL_vit_*. "
             "Untyped legacy artifacts such as model-sam_* are ignored."
         ),
     )
