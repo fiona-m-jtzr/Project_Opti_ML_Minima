@@ -471,7 +471,7 @@ def main():
             "weight_norm": round(compute_weight_norm(model), 6),
         }
         history.append(record)
-        wandb.log(record)
+        wandb.log(record)git
 
         print(
             f"Epoch {epoch+1:>3}/{args.epochs} | "
@@ -486,6 +486,7 @@ def main():
             is_flattest = grad_norm < best_grad
             if is_flattest:
                 best_grad = grad_norm
+                epochs_no_improve = 0
                 torch.save({
                     "epoch":       epoch,
                     "model":       model.state_dict(),
@@ -494,12 +495,16 @@ def main():
                     "val_acc":     val_acc,
                     "args":        vars(args),
                 }, out_dir / "min_grad.pt")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= args.patience:
+                    print(f"\nEarly stopping triggered after {epoch+1} epochs.")
+                    break
 
         is_best = val_acc > best_acc
         if is_best:
             best_acc  = val_acc
             best_loss = val_loss
-            epochs_no_improve = 0
             torch.save({
                 "epoch":     epoch,
                 "model":     model.state_dict(),
@@ -510,11 +515,6 @@ def main():
                 "history":   history,
                 "args":      vars(args),
             }, out_dir / "best.pt")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= args.patience:
-                print(f"\nEarly stopping triggered after {epoch+1} epochs.")
-                break
 
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
             torch.save({
