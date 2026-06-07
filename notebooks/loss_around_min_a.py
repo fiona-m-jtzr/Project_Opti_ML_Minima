@@ -107,7 +107,8 @@ for i, x_coeff in enumerate(steps_x):
         
         # Calculer la loss à cette coordonnée
         loss_val = evaluate_loss(model, testloader, criterion)
-        Z[j, i] = np.log10(loss_val) # Attention à l'indexation (y=lignes, x=colonnes)
+        # Z[j, i] = np.log10(loss_val) # Attention à l'indexation (y=lignes, x=colonnes)
+        Z[j, i] = min(loss_val, 10) # Attention à l'indexation (y=lignes, x=colonnes)
         
     print(f"Ligne {i+1}/{grid_resolution} terminée.")
 
