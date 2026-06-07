@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Aggregate W&B minimum-analysis artifacts and plot summary diagnostics.
 
+This variant plots both RAW and NORMALIZED Hessian metrics produced by the
+analysis script:
+- raw top Hessian eigenvalue, taken as raw_top_eigenvalues[0];
+- normalized top Hessian eigenvalue, taken as normalized_top_eigenvalue;
+- raw Hessian trace mean, taken as raw_trace_mean;
+- normalized Hessian trace, taken as normalized_trace.
+
+If normalized Hessian values are missing but raw values and weight_norm are
+available, the script reconstructs the normalized values as raw_value * ||w||^2.
+
 The W&B loading path intentionally mirrors the original script:
 - use the default W&B entity;
 - scan runs in PROJECT;
@@ -39,9 +49,16 @@ SUMMARY_METRICS = (
     "gradient_norm_full_train_dataset",
 )
 
+# These are the Hessian metrics averaged across runs before plotting.
+# The raw top eigenvalue is derived from hessian_metrics["raw_top_eigenvalues"][0]
+# when hessian_metrics["raw_top_eigenvalue"] is not already present.
+# Normalized values are read directly when present and otherwise reconstructed
+# from raw_value * weight_norm**2 when possible.
 HESSIAN_METRICS = (
     "negative_curvature_ratio",
+    "raw_top_eigenvalue",
     "normalized_top_eigenvalue",
+    "raw_trace_mean",
     "normalized_trace",
 )
 
@@ -53,7 +70,9 @@ PLOT_METRICS = (
     ("test_accuracy", "Test Accuracy", "accuracy"),
     ("train_test_accuracy_gap", "Train-Test Accuracy Gap", "train accuracy - test accuracy"),
     ("gradient_norm_full_train_dataset", "Gradient Norm", "gradient norm"),
-    (("hessian_metrics", "normalized_top_eigenvalue"), "Normalized Hessian Max Eigenvalue", "λ_max · ||w||²"),
+    (("hessian_metrics", "raw_top_eigenvalue"), "Raw Hessian Max Eigenvalue", "λ_max(H)"),
+    (("hessian_metrics", "normalized_top_eigenvalue"), "Normalized Hessian Max Eigenvalue", "λ_max(H) · ||w||²"),
+    (("hessian_metrics", "raw_trace_mean"), "Raw Hessian Trace", "tr(H)"),
     (("hessian_metrics", "normalized_trace"), "Normalized Hessian Trace", "tr(H) · ||w||²"),
 )
 
@@ -83,6 +102,55 @@ def get_nested(dct: dict[str, Any], *keys: str) -> Any:
             return None
         value = value.get(key)
     return value
+
+
+def hessian_metric_value(result: dict[str, Any], metric: str) -> Any:
+    """Read Hessian metrics with compatibility for older analysis JSON files."""
+    hessian_metrics = result.get("hessian_metrics")
+    if not isinstance(hessian_metrics, dict):
+        return None
+
+    def finite_real(value: Any) -> float | None:
+        if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
+            return float(value)
+        return None
+
+    def raw_top_eigenvalue() -> float | None:
+        explicit_value = finite_real(hessian_metrics.get("raw_top_eigenvalue"))
+        if explicit_value is not None:
+            return explicit_value
+
+        eigenvalues = hessian_metrics.get("raw_top_eigenvalues")
+        if isinstance(eigenvalues, list) and eigenvalues:
+            return finite_real(eigenvalues[0])
+        return None
+
+    if metric == "raw_top_eigenvalue":
+        return raw_top_eigenvalue()
+
+    if metric == "normalized_top_eigenvalue":
+        explicit_value = finite_real(hessian_metrics.get("normalized_top_eigenvalue"))
+        if explicit_value is not None:
+            return explicit_value
+
+        raw_value = raw_top_eigenvalue()
+        weight_norm = finite_real(hessian_metrics.get("weight_norm"))
+        if raw_value is not None and weight_norm is not None:
+            return raw_value * (weight_norm ** 2)
+        return None
+
+    if metric == "normalized_trace":
+        explicit_value = finite_real(hessian_metrics.get("normalized_trace"))
+        if explicit_value is not None:
+            return explicit_value
+
+        raw_trace = finite_real(hessian_metrics.get("raw_trace_mean"))
+        weight_norm = finite_real(hessian_metrics.get("weight_norm"))
+        if raw_trace is not None and weight_norm is not None:
+            return raw_trace * (weight_norm ** 2)
+        return None
+
+    return hessian_metrics.get(metric)
 
 
 def result_name(result: dict[str, Any]) -> str:
@@ -332,7 +400,7 @@ def average_group(
     base["hessian_metrics"] = dict(base.get("hessian_metrics", {}))
     for metric in HESSIAN_METRICS:
         base["hessian_metrics"][metric] = average_numeric(
-            get_nested(result, "hessian_metrics", metric) for result in group
+            hessian_metric_value(result, metric) for result in group
         )
 
     base["source_run_name"] = label
@@ -411,6 +479,8 @@ def build_color_map(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def metric_value(result: dict[str, Any], key: str | tuple[str, ...]) -> Any:
     if isinstance(key, tuple):
+        if len(key) == 2 and key[0] == "hessian_metrics":
+            return hessian_metric_value(result, key[1])
         return get_nested(result, *key)
     return result.get(key)
 
@@ -461,7 +531,10 @@ def bar_metric(
     values = [value for _, value in clean]
     metas = [run_meta(result) for result, _ in clean]
     colors = [color_map[meta.get("color_label", "unknown")] for meta in metas]
-    labels = [short_axis_label({**meta, "_num_runs": result.get("_num_runs")}) for result, meta in zip((r for r, _ in clean), metas)]
+    labels = [
+        short_axis_label({**meta, "_num_runs": result.get("_num_runs")})
+        for result, meta in zip((r for r, _ in clean), metas)
+    ]
 
     ax.bar(xs, values, color=colors, alpha=0.85)
     ax.set_ylabel(ylabel)
@@ -565,16 +638,24 @@ def plot_results(
 
     color_map = build_color_map(results)
 
-    fig, axes = plt.subplots(5, 2, figsize=(22, 20))
+    n_panels = len(PLOT_METRICS) + 1  # summary bars plus the sharpness curve panel
+    n_cols = 2
+    n_rows = math.ceil(n_panels / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(22, 4 * n_rows))
     axes = axes.flatten()
 
-    for ax, (metric_key, title, ylabel) in zip(axes[:9], PLOT_METRICS):
+    for ax, (metric_key, title, ylabel) in zip(axes, PLOT_METRICS):
         bar_metric(ax, results, metric_key, title, ylabel, color_map, sort_bars)
 
-    plot_sharpness_curves(axes[9], results, color_map)
+    sharpness_ax = axes[len(PLOT_METRICS)]
+    plot_sharpness_curves(sharpness_ax, results, color_map)
+
+    for ax in axes[n_panels:]:
+        ax.set_axis_off()
 
     fig.suptitle(
-        f"Minimum analysis summary | scope={scope} | grouped by={group_by} | bars={sort_bars}",
+        f"Minimum analysis summary | scope={scope} | grouped by={group_by} | bars={sort_bars} | raw + normalized Hessian metrics",
         fontsize=16,
     )
     add_color_legend(fig, color_map, color_legend_title(scope, group_by))
@@ -595,9 +676,9 @@ def plot_results(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Load W&B minimum-analysis artifacts, average them, and plot summary metrics."
+        description="Load W&B minimum-analysis artifacts, average them, and plot summary metrics with raw and normalized Hessian values."
     )
-    parser.add_argument("--output", default="minimum_analysis_summary.png")
+    parser.add_argument("--output", default="minimum_analysis_summary_raw_and_normalized_hessian.png")
     parser.add_argument("--project", default=PROJECT)
     parser.add_argument(
         "--scope",
