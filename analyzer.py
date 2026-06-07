@@ -961,7 +961,7 @@ def analyze(
         criterion=criterion,
         device=device,
     )
-    """print("Hessian metrics computed. Computing sampled sharpness curve...")
+    print("Hessian metrics computed. Computing sampled sharpness curve...")
     sharpness_by_radius = sharpness_curve(
         model=model,
         loader=trainloader,
@@ -969,13 +969,13 @@ def analyze(
         device=device,
         relative_radii=relative_radii,
         samples_per_radius=samples_per_radius,
-    )"""
+    )
 
     if skip_adaptive_sharpness:
         adaptive_sharpness_by_radius = None
         print("Skipping element-wise adaptive sharpness curve.")
     else:
-        print("Hessian metrics computed. Computing element-wise adaptive sharpness curve...")
+        print("Sampled sharpness curve computed. Computing element-wise adaptive sharpness curve...")
         adaptive_sharpness_by_radius = elementwise_adaptive_sharpness_curve(
             model=model,
             loader=trainloader,
