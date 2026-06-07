@@ -123,24 +123,25 @@ for i in range(grid_resolution):
         theta_grid = theta0 + X[i, j] * u + Y[i, j] * v
         unflatten_params(eval_model, theta_grid)
         Z[i, j] = min(evaluate_model(eval_model, val_loader, criterion, device), 10)
+        if (j == 10):print(Z[i, j])
     print(f"Ligne {i+1}/{grid_resolution} complétée.")
 
 # ==========================================
 # 6. Plot
 # ==========================================
-plt.figure(figsize=(10, 8))
-contours = plt.contourf(X, Y, Z, levels=30, cmap='terrain')
-plt.colorbar(contours, label='Cross-Entropy Loss')
-plt.scatter(0, 0, color='red', marker='*', s=300, zorder=5, label='Minimum (θ₀)')
-plt.title('Loss Landscape — ResNet20 (muon lr0.02, cosine, seed1)')
-plt.xlabel('Direction u (filter-normalized)')
-plt.ylabel('Direction v (filter-normalized)')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.savefig('loss_landscape_single_model.png', dpi=300)
-print("Sauvegardé : loss_landscape_single_model.png")
+# plt.figure(figsize=(10, 8))
+# contours = plt.contourf(X, Y, Z, levels=30, cmap='terrain')
+# plt.colorbar(contours, label='Cross-Entropy Loss')
+# plt.scatter(0, 0, color='red', marker='*', s=300, zorder=5, label='Minimum (θ₀)')
+# plt.title('Loss Landscape — ResNet20 (muon lr0.02, cosine, seed1)')
+# plt.xlabel('Direction u (filter-normalized)')
+# plt.ylabel('Direction v (filter-normalized)')
+# plt.legend()
+# plt.grid(True, linestyle='--', alpha=0.5)
+# plt.savefig('loss_landscape_single_model.png', dpi=300)
+# print("Sauvegardé : loss_landscape_single_model.png")
 
-fig = plt.figure(figsize=(16, 6))
+# fig = plt.figure(figsize=(16, 6))
     
 # 1. 3D Terrain Plot
 ax1 = fig.add_subplot(1, 2, 1, projection='3d')
