@@ -17,6 +17,19 @@ from hessian.hessian import hessian
 
 from itertools import islice
 
+try:
+    from torch.func import functional_call as _torch_functional_call
+
+    def _functional_call(model, params, buffers, args):
+        return _torch_functional_call(model, (params, buffers), args)
+
+except ImportError:
+    from torch.nn.utils.stateless import functional_call as _torch_functional_call
+
+    def _functional_call(model, params, buffers, args):
+        state = {**params, **buffers}
+        return _torch_functional_call(model, state, args)
+
 
 # -----------------------------
 # Model and data utilities
@@ -285,6 +298,407 @@ def sharpness_curve(
 
 
 # -----------------------------
+# Element-wise adaptive sharpness
+# -----------------------------
+
+
+def _extract_logits(output):
+    """Handle models that return logits directly or inside a tuple/object."""
+    if hasattr(output, "logits"):
+        return output.logits
+    if isinstance(output, (tuple, list)):
+        return output[0]
+    return output
+
+
+def _logit_normalize(logits, eps=1e-12):
+    """Normalize logits as in scale-insensitive classification sharpness."""
+    centered = logits - logits.mean(dim=-1, keepdim=True)
+    denom = centered.pow(2).mean(dim=-1, keepdim=True).sqrt().clamp_min(eps)
+    return centered / denom
+
+
+def _criterion_loss(criterion, logits, targets):
+    """Return a scalar batch loss, assuming CrossEntropyLoss-style mean reduction."""
+    loss = criterion(logits, targets)
+    if loss.ndim > 0:
+        loss = loss.mean()
+    return loss
+
+
+def _loss_with_params_on_batches(
+    model,
+    params,
+    buffers,
+    batches,
+    criterion,
+    logit_normalize=False,
+):
+    """Mean loss over a fixed list of already-device-moved batches."""
+    total_loss = None
+    total_seen = 0
+
+    for x, y in batches:
+        logits = _extract_logits(_functional_call(model, params, buffers, (x,)))
+        if logit_normalize:
+            logits = _logit_normalize(logits)
+
+        batch_loss = _criterion_loss(criterion, logits, y)
+        batch_size = y.size(0)
+        weighted_loss = batch_loss * batch_size
+        total_loss = weighted_loss if total_loss is None else total_loss + weighted_loss
+        total_seen += batch_size
+
+    if total_seen == 0:
+        raise ValueError("No batches were provided for adaptive sharpness.")
+
+    return total_loss / total_seen
+
+
+def _global_l2_norm(tensors, eps=1e-12):
+    total = None
+    for tensor in tensors:
+        val = tensor.detach().pow(2).sum()
+        total = val if total is None else total + val
+    return total.sqrt().clamp_min(eps)
+
+
+def _collect_batches(loader, device, max_batches):
+    """Materialize a deterministic prefix of the loader for repeated PGD steps."""
+    batches = []
+
+    for batch_idx, (x, y) in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+        batches.append((x.to(device), y.to(device)))
+
+    if len(batches) == 0:
+        raise ValueError("The loader yielded no batches.")
+
+    return batches
+
+
+def _elementwise_adaptive_worst_sharpness_on_fixed_batches(
+    model,
+    batches,
+    criterion,
+    rho=2e-3,
+    steps=20,
+    step_size=None,
+    norm="linf",
+    logit_normalize=True,
+    random_start=False,
+):
+    """
+    Estimate worst-case element-wise adaptive sharpness on fixed batches.
+
+    This computes
+
+        max_{||delta / |w| ||_p <= rho} L_S(w + delta) - L_S(w),
+
+    using the reparameterization delta = |w| * z. For norm="linf", z is
+    projected into [-rho, rho] element-wise; for norm="l2", z is projected
+    into the global L2 ball of radius rho.
+    """
+    if norm not in {"linf", "l2"}:
+        raise ValueError("norm must be either 'linf' or 'l2'.")
+
+    if steps < 0:
+        raise ValueError("steps must be non-negative.")
+
+    if step_size is None:
+        step_size = 2.0 * rho / max(steps, 1)
+
+    old_mode = model.training
+    model.eval()
+
+    try:
+        base_params = {
+            name: p.detach().clone()
+            for name, p in model.named_parameters()
+        }
+        buffers = {
+            name: b.detach().clone()
+            for name, b in model.named_buffers()
+        }
+        trainable_names = [
+            name for name, p in model.named_parameters() if p.requires_grad
+        ]
+
+        if not trainable_names:
+            raise ValueError("Model has no trainable parameters.")
+
+        scales = {name: base_params[name].abs() for name in trainable_names}
+
+        with torch.no_grad():
+            base_loss = _loss_with_params_on_batches(
+                model=model,
+                params=base_params,
+                buffers=buffers,
+                batches=batches,
+                criterion=criterion,
+                logit_normalize=logit_normalize,
+            )
+
+        z = {}
+        for name in trainable_names:
+            if random_start:
+                if norm == "linf":
+                    z[name] = torch.empty_like(base_params[name]).uniform_(-rho, rho)
+                else:
+                    z[name] = torch.randn_like(base_params[name])
+            else:
+                z[name] = torch.zeros_like(base_params[name])
+
+        if random_start and norm == "l2":
+            z_norm = _global_l2_norm(z.values())
+            scale = torch.clamp(
+                torch.as_tensor(rho, device=z_norm.device) / z_norm,
+                max=1.0,
+            )
+            for name in trainable_names:
+                z[name].mul_(scale)
+
+        for name in trainable_names:
+            z[name].requires_grad_(True)
+
+        def make_perturbed_params():
+            perturbed = dict(base_params)
+            for name in trainable_names:
+                perturbed[name] = base_params[name] + scales[name] * z[name]
+            return perturbed
+
+        for _ in range(steps):
+            loss = _loss_with_params_on_batches(
+                model=model,
+                params=make_perturbed_params(),
+                buffers=buffers,
+                batches=batches,
+                criterion=criterion,
+                logit_normalize=logit_normalize,
+            )
+
+            grads = torch.autograd.grad(
+                loss,
+                [z[name] for name in trainable_names],
+                allow_unused=True,
+            )
+            grads = [
+                torch.zeros_like(z[name]) if grad is None else grad
+                for name, grad in zip(trainable_names, grads)
+            ]
+
+            with torch.no_grad():
+                if norm == "linf":
+                    for name, grad in zip(trainable_names, grads):
+                        z[name].add_(step_size * grad.sign())
+                        z[name].clamp_(-rho, rho)
+                else:
+                    grad_norm = _global_l2_norm(grads)
+                    for name, grad in zip(trainable_names, grads):
+                        z[name].add_(step_size * grad / grad_norm)
+
+                    z_norm = _global_l2_norm([z[name] for name in trainable_names])
+                    scale = torch.clamp(
+                        torch.as_tensor(rho, device=z_norm.device) / z_norm,
+                        max=1.0,
+                    )
+                    for name in trainable_names:
+                        z[name].mul_(scale)
+
+        with torch.no_grad():
+            perturbed_loss = _loss_with_params_on_batches(
+                model=model,
+                params=make_perturbed_params(),
+                buffers=buffers,
+                batches=batches,
+                criterion=criterion,
+                logit_normalize=logit_normalize,
+            )
+
+        sharpness = perturbed_loss - base_loss
+
+        return {
+            "base_loss": float(base_loss.detach().cpu()),
+            "perturbed_loss": float(perturbed_loss.detach().cpu()),
+            "sharpness_delta": float(sharpness.detach().cpu()),
+            "rho": float(rho),
+            "steps": int(steps),
+            "step_size": float(step_size),
+            "norm": norm,
+            "logit_normalize": bool(logit_normalize),
+            "adaptive_scale": "elementwise_abs_parameter",
+            "optimization": "projected_gradient_ascent",
+            "num_batches": len(batches),
+            "num_examples": int(sum(y.size(0) for _, y in batches)),
+        }
+
+    finally:
+        model.train(old_mode)
+        model.zero_grad(set_to_none=True)
+
+
+def elementwise_adaptive_sharpness_multi_batch(
+    model,
+    loader,
+    criterion,
+    device,
+    rho=2e-3,
+    steps=20,
+    max_batches=8,
+    step_size=None,
+    norm="linf",
+    logit_normalize=True,
+    average_individual_batches=True,
+    random_start=False,
+):
+    """
+    Estimate element-wise adaptive sharpness over multiple deterministic batches.
+
+    By default, this computes one worst-case sharpness value per batch and returns
+    the mean. This matches the common m-sharpness protocol where several fixed
+    non-augmented mini-batches are evaluated and averaged. Set
+    average_individual_batches=False to optimize one shared perturbation over the
+    union of the selected batches.
+    """
+    fixed_batches = _collect_batches(loader, device, max_batches=max_batches)
+
+    if average_individual_batches:
+        per_batch = []
+        for batch in fixed_batches:
+            per_batch.append(
+                _elementwise_adaptive_worst_sharpness_on_fixed_batches(
+                    model=model,
+                    batches=[batch],
+                    criterion=criterion,
+                    rho=rho,
+                    steps=steps,
+                    step_size=step_size,
+                    norm=norm,
+                    logit_normalize=logit_normalize,
+                    random_start=random_start,
+                )
+            )
+
+        mean_base_loss = sum(item["base_loss"] for item in per_batch) / len(per_batch)
+        mean_perturbed_loss = sum(item["perturbed_loss"] for item in per_batch) / len(per_batch)
+        mean_sharpness = sum(item["sharpness_delta"] for item in per_batch) / len(per_batch)
+        max_sharpness = max(item["sharpness_delta"] for item in per_batch)
+
+        return {
+            "base_loss": float(mean_base_loss),
+            "perturbed_loss": float(mean_perturbed_loss),
+            "sharpness_delta": float(mean_sharpness),
+            "max_batch_sharpness_delta": float(max_sharpness),
+            "per_batch": per_batch,
+            "rho": float(rho),
+            "steps": int(steps),
+            "step_size": None if step_size is None else float(step_size),
+            "norm": norm,
+            "logit_normalize": bool(logit_normalize),
+            "adaptive_scale": "elementwise_abs_parameter",
+            "aggregation": "mean_of_per_batch_worst_case_sharpness",
+            "num_batches": len(per_batch),
+            "num_examples": int(sum(y.size(0) for _, y in fixed_batches)),
+        }
+
+    return _elementwise_adaptive_worst_sharpness_on_fixed_batches(
+        model=model,
+        batches=fixed_batches,
+        criterion=criterion,
+        rho=rho,
+        steps=steps,
+        step_size=step_size,
+        norm=norm,
+        logit_normalize=logit_normalize,
+        random_start=random_start,
+    )
+
+
+def elementwise_adaptive_sharpness_curve(
+    model,
+    loader,
+    criterion,
+    device,
+    rhos=(1e-4, 3e-4, 1e-3, 2e-3, 3e-3),
+    steps=20,
+    max_batches=8,
+    step_size=None,
+    norm="linf",
+    logit_normalize=True,
+    average_individual_batches=True,
+    random_start=False,
+):
+    """
+    Compute an element-wise adaptive sharpness curve over multiple rho values.
+
+    This mirrors sharpness_curve(...), but each radius is the element-wise
+    adaptive radius rho in delta = |w| * z. The same deterministic prefix of
+    train batches is reused for every rho so that curve points are comparable.
+    """
+    fixed_batches = _collect_batches(loader, device, max_batches=max_batches)
+    curve = []
+
+    for rho in rhos:
+        if average_individual_batches:
+            per_batch = []
+            for batch in fixed_batches:
+                per_batch.append(
+                    _elementwise_adaptive_worst_sharpness_on_fixed_batches(
+                        model=model,
+                        batches=[batch],
+                        criterion=criterion,
+                        rho=rho,
+                        steps=steps,
+                        step_size=step_size,
+                        norm=norm,
+                        logit_normalize=logit_normalize,
+                        random_start=random_start,
+                    )
+                )
+
+            mean_base_loss = sum(item["base_loss"] for item in per_batch) / len(per_batch)
+            mean_perturbed_loss = sum(item["perturbed_loss"] for item in per_batch) / len(per_batch)
+            mean_sharpness = sum(item["sharpness_delta"] for item in per_batch) / len(per_batch)
+            max_sharpness = max(item["sharpness_delta"] for item in per_batch)
+
+            curve.append(
+                {
+                    "base_loss": float(mean_base_loss),
+                    "perturbed_loss": float(mean_perturbed_loss),
+                    "sharpness_delta": float(mean_sharpness),
+                    "max_batch_sharpness_delta": float(max_sharpness),
+                    "per_batch": per_batch,
+                    "rho": float(rho),
+                    "steps": int(steps),
+                    "step_size": None if step_size is None else float(step_size),
+                    "norm": norm,
+                    "logit_normalize": bool(logit_normalize),
+                    "adaptive_scale": "elementwise_abs_parameter",
+                    "aggregation": "mean_of_per_batch_worst_case_sharpness",
+                    "num_batches": len(per_batch),
+                    "num_examples": int(sum(y.size(0) for _, y in fixed_batches)),
+                }
+            )
+        else:
+            curve.append(
+                _elementwise_adaptive_worst_sharpness_on_fixed_batches(
+                    model=model,
+                    batches=fixed_batches,
+                    criterion=criterion,
+                    rho=rho,
+                    steps=steps,
+                    step_size=step_size,
+                    norm=norm,
+                    logit_normalize=logit_normalize,
+                    random_start=random_start,
+                )
+            )
+
+    return curve
+
+
+# -----------------------------
 # Hessian metrics
 # -----------------------------
 
@@ -463,6 +877,13 @@ def analyze(
     batch_size=128,
     relative_radii=(1e-4, 3e-4, 1e-3, 3e-3, 1e-2),
     samples_per_radius=20,
+    adaptive_sharpness_rhos=(1e-4, 3e-4, 1e-3, 2e-3, 3e-3),
+    adaptive_sharpness_steps=20,
+    adaptive_sharpness_batches=8,
+    adaptive_sharpness_norm="linf",
+    adaptive_sharpness_logit_normalize=True,
+    adaptive_sharpness_average_batches=True,
+    skip_adaptive_sharpness=False,
 ):
     print(f"Analyzing Launched for: {run_name}")
     set_seed(42)
@@ -481,6 +902,13 @@ def analyze(
             "batch_size": batch_size,
             "relative_radii": list(relative_radii),
             "samples_per_radius": samples_per_radius,
+            "adaptive_sharpness_rhos": list(adaptive_sharpness_rhos),
+            "adaptive_sharpness_steps": adaptive_sharpness_steps,
+            "adaptive_sharpness_batches": adaptive_sharpness_batches,
+            "adaptive_sharpness_norm": adaptive_sharpness_norm,
+            "adaptive_sharpness_logit_normalize": adaptive_sharpness_logit_normalize,
+            "adaptive_sharpness_average_batches": adaptive_sharpness_average_batches,
+            "skip_adaptive_sharpness": skip_adaptive_sharpness,
         },
     )
 
@@ -542,6 +970,25 @@ def analyze(
         relative_radii=relative_radii,
         samples_per_radius=samples_per_radius,
     )
+
+    if skip_adaptive_sharpness:
+        adaptive_sharpness_by_radius = None
+        print("Skipping element-wise adaptive sharpness curve.")
+    else:
+        print("Sampled sharpness curve computed. Computing element-wise adaptive sharpness curve...")
+        adaptive_sharpness_by_radius = elementwise_adaptive_sharpness_curve(
+            model=model,
+            loader=trainloader,
+            criterion=criterion,
+            device=device,
+            rhos=adaptive_sharpness_rhos,
+            steps=adaptive_sharpness_steps,
+            max_batches=adaptive_sharpness_batches,
+            norm=adaptive_sharpness_norm,
+            logit_normalize=adaptive_sharpness_logit_normalize,
+            average_individual_batches=adaptive_sharpness_average_batches,
+        )
+
     print("-" * 50)
     print("Analysis completed. Saving results...")
     results = {
@@ -559,6 +1006,7 @@ def analyze(
         "gradient_norm_full_train_dataset": grad_norm,
         "hessian_metrics": hessian_metrics,
         "scale_invariant_sharpness_by_radius": sharpness_by_radius,
+        "elementwise_adaptive_sharpness_by_radius": adaptive_sharpness_by_radius,
     }
 
     results_path = Path("minimum_analysis.json")
@@ -581,14 +1029,77 @@ def parse_args():
     parser.add_argument("--run_name", required=True)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--samples_per_radius", type=int, default=20)
+    parser.add_argument(
+        "--adaptive_sharpness_rhos",
+        type=float,
+        nargs="+",
+        default=[1e-4, 3e-4, 1e-3, 2e-3, 3e-3],
+        help=(
+            "One or more rho values for the element-wise adaptive sharpness curve. "
+            "Example: --adaptive_sharpness_rhos 3e-4 1e-3 2e-3 3e-3"
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_sharpness_rho",
+        type=float,
+        default=None,
+        help=(
+            "Deprecated single-rho option. If provided, the adaptive curve uses "
+            "only this rho. Prefer --adaptive_sharpness_rhos for a sweep."
+        ),
+    )
+    parser.add_argument("--adaptive_sharpness_steps", type=int, default=20)
+    parser.add_argument("--adaptive_sharpness_batches", type=int, default=8)
+    parser.add_argument(
+        "--adaptive_sharpness_norm",
+        choices=["linf", "l2"],
+        default="linf",
+    )
+    parser.add_argument(
+        "--no_adaptive_sharpness_logit_normalize",
+        dest="adaptive_sharpness_logit_normalize",
+        action="store_false",
+        help="Disable logit normalization for element-wise adaptive sharpness.",
+    )
+    parser.add_argument(
+        "--adaptive_sharpness_union_batches",
+        dest="adaptive_sharpness_average_batches",
+        action="store_false",
+        help=(
+            "Optimize one shared perturbation over all selected batches instead "
+            "of averaging per-batch worst-case sharpness."
+        ),
+    )
+    parser.add_argument(
+        "--skip_adaptive_sharpness",
+        action="store_true",
+        help="Skip the element-wise adaptive sharpness metric.",
+    )
+    parser.set_defaults(
+        adaptive_sharpness_logit_normalize=True,
+        adaptive_sharpness_average_batches=True,
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
+    adaptive_sharpness_rhos = (
+        [args.adaptive_sharpness_rho]
+        if args.adaptive_sharpness_rho is not None
+        else args.adaptive_sharpness_rhos
+    )
+
     analyze(
         run_name=args.run_name,
         batch_size=args.batch_size,
         samples_per_radius=args.samples_per_radius,
+        adaptive_sharpness_rhos=adaptive_sharpness_rhos,
+        adaptive_sharpness_steps=args.adaptive_sharpness_steps,
+        adaptive_sharpness_batches=args.adaptive_sharpness_batches,
+        adaptive_sharpness_norm=args.adaptive_sharpness_norm,
+        adaptive_sharpness_logit_normalize=args.adaptive_sharpness_logit_normalize,
+        adaptive_sharpness_average_batches=args.adaptive_sharpness_average_batches,
+        skip_adaptive_sharpness=args.skip_adaptive_sharpness,
     )
