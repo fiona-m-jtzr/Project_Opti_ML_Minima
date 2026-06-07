@@ -95,9 +95,8 @@ v = filter_normalized_direction(model)
 # 3. Grille d'évaluation
 # ==========================================
 grid_resolution = 20      # augmente à 40+ pour plus de précision
-alpha_range = 1.0         # échelle de l'exploration (à ajuster selon le modèle)
 
-coords = np.linspace(-alpha_range, alpha_range, grid_resolution)
+coords = np.linspace(-0.2, 1.2, grid_resolution)
 X, Y = np.meshgrid(coords, coords)
 Z = np.zeros_like(X)
 
@@ -141,7 +140,7 @@ for i in range(grid_resolution):
 # plt.savefig('loss_landscape_single_model.png', dpi=300)
 # print("Sauvegardé : loss_landscape_single_model.png")
 
-# fig = plt.figure(figsize=(16, 6))
+fig = plt.figure(figsize=(16, 6))
     
 # 1. 3D Terrain Plot
 ax1 = fig.add_subplot(1, 2, 1, projection='3d')
