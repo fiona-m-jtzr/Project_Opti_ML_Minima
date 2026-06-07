@@ -280,7 +280,6 @@ def evaluate(model, loader, criterion, device):
         total   += inputs.size(0)
     return total_loss / total, 100.0 * correct / total
 
-
 # ---------------------------------------------------------------------------
 # Metrics helpers
 # ---------------------------------------------------------------------------
@@ -302,7 +301,6 @@ def compute_weight_norm(model):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="CIFAR-10 training — ResNet-20 or ViT, optimizer minima investigation",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -321,8 +319,6 @@ def parse_args():
     p.add_argument("--epochs",      type=int,   default=500)
     p.add_argument("--batch_size",  type=int,   default=128)
     p.add_argument("--num_workers", type=int,   default=4)
-    p.add_argument("--label_smoothing", type=float, default=0.0)
-    p.add_argument("--patience",    type=int,   default=200)
     p.add_argument("--augment",     action="store_true")
 
     # --- Optimizer ---
@@ -375,12 +371,20 @@ def main():
             extras = f"_rho{args.rho}_base{args.base_optimizer}"
         elif args.optimizer == "sgd":
             extras = f"_mom{args.momentum}" + ("_nesterov" if args.nesterov else "")
-        elif args.model == "vit":
-            extras = ""
+        elif args.optimizer == "muon":
+            # Captures both distinct learning rate tracks explicitly
+            extras = f"_muonLR{args.lr}_adamLR{args.lr_muon_adam}"
+        
+        # Build the final string seamlessly
+        # Note: We removed the duplicate '_lr{args.lr}' from the template below 
+        # when running Muon to prevent naming clutter.
+        lr_string = "" if args.optimizer == "muon" else f"_lr{args.lr}"
+        
         args.run_name = (
-            f"{args.model}_{args.optimizer}{extras}"
-            f"_lr{args.lr}_wd{args.weight_decay}"
-            f"_bs{args.batch_size}_{args.scheduler}_seed{args.seed}"
+            f"FINAL_MODEL_{args.model}_{args.optimizer}{extras}"
+            f"{lr_string}_wd{args.weight_decay}"
+            f"_bs{args.batch_size}_{args.scheduler}_seed{args.seed}" 
+            + ("_augment" if args.augment else "")
         )
 
     out_dir = Path(args.output_dir) / args.run_name
@@ -414,7 +418,7 @@ def main():
     model = build_model(args).to(device)
     print(f"{args.model} — {count_parameters(model):,} trainable parameters\n")
 
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion = nn.CrossEntropyLoss()
     optimizer = build_optimizer(model, args)
     scheduler = build_scheduler(optimizer, args, steps_per_epoch=len(train_loader))
 
@@ -423,6 +427,7 @@ def main():
     best_loss   = float("inf")
     best_grad   = float("inf")
     history     = []
+    grad_norm_history = []
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
@@ -434,8 +439,6 @@ def main():
         best_grad   = ckpt.get("best_grad", float("inf")) 
         history     = ckpt.get("history", [])
         print(f"Resumed from epoch {start_epoch} (best acc = {best_acc:.2f}%)\n")
-
-    epochs_no_improve = 0
 
     for epoch in range(start_epoch, args.epochs):
         t0 = time.time()
@@ -471,7 +474,7 @@ def main():
             "weight_norm": round(compute_weight_norm(model), 6),
         }
         history.append(record)
-        wandb.log(record)git
+        wandb.log(record)
 
         print(
             f"Epoch {epoch+1:>3}/{args.epochs} | "
@@ -483,10 +486,8 @@ def main():
         )
 
         if (epoch + 1) > args.warmup_epochs:
-            is_flattest = grad_norm < best_grad
-            if is_flattest:
+            if grad_norm < best_grad * 0.99:
                 best_grad = grad_norm
-                epochs_no_improve = 0
                 torch.save({
                     "epoch":       epoch,
                     "model":       model.state_dict(),
@@ -495,11 +496,6 @@ def main():
                     "val_acc":     val_acc,
                     "args":        vars(args),
                 }, out_dir / "min_grad.pt")
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= args.patience:
-                    print(f"\nEarly stopping triggered after {epoch+1} epochs.")
-                    break
 
         is_best = val_acc > best_acc
         if is_best:
@@ -529,6 +525,17 @@ def main():
 
         with open(out_dir / "history.json", "w") as f:
             json.dump(history, f, indent=2)
+        
+        grad_norm_history.append(grad_norm)
+        if len(grad_norm_history) > 5:
+            grad_norm_history.pop(0)  
+        
+        moving_avg_grad = sum(grad_norm_history) / len(grad_norm_history)
+
+        if moving_avg_grad <= 1e-3 and len(grad_norm_history) >= 5:
+            print(f"\nTarget landscape flatness achieved. Minima found after {epoch+1} epochs.")
+            print(f"5-Epoch Moving Average Grad Norm: {moving_avg_grad:.6f}")
+            break
 
     print(f"\n✓ Training complete. Best val accuracy: {best_acc:.2f}%")
     print(f"  Outputs saved to: {out_dir}\n")

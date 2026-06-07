@@ -20,10 +20,8 @@ for rho in 0.01 0.05 0.1; do
             --epochs 600 \
             --scheduler cosine_warmup \
             --warmup_epochs 15 \
-            --patience 300 \
-            --augment"
+            --seed 1"
 done
-
 
 for rho in 0.01 0.05 0.1; do
     rho_tag=$(echo $rho | tr '.' 'p')
@@ -44,5 +42,5 @@ for rho in 0.01 0.05 0.1; do
             --batch_size 128 \
             --epochs 400 \
             --scheduler cosine \
-            --patience 100"
+            --seed 1"
 done
