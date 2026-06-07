@@ -16,7 +16,7 @@ artifact = api.artifact("fiona-jetzer-epfl/OptiML_Minima/model-resnet20_muon_lr0
 artifact_dir = artifact.download()
 
 artifact_path = Path(artifact_dir)
-print(list(artifact_path.rglob("*")))
+print('list', list(artifact_path.rglob("*")))
 
 # Charger le checkpoint (adapter le nom de fichier selon ce que tu trouves)
 checkpoint = torch.load(artifact_path / "best.pt", map_location="cpu")
