@@ -172,4 +172,5 @@ def plot_single_model_landscape(model_class, trained_model, test_loader,
     plt.tight_layout()
     plt.savefig(f'loss_around_{save_name}.png', dpi=300)
 
-plot_single_model_landscape(ResNet20, best_model0, test_dataloader, criterion, device)
+if __name__ == "__main__":
+    plot_single_model_landscape(ResNet20, best_model0, test_dataloader, criterion, device)
