@@ -81,6 +81,9 @@ def full_loss_and_accuracy(model, loader, criterion, device, max_batches=None):
         logits = model(x)
         loss = criterion(logits, y)
 
+        preds = logits.argmax(dim=1)
+        total_correct += (preds == y).sum().item()
+
         total_loss += loss.item() * y.size(0)
 
         total_samples += y.size(0)
