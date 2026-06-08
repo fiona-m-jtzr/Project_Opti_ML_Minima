@@ -63,7 +63,8 @@ def get_loaders(batch_size=128):
 # -----------------------------
 
 @torch.no_grad()
-def full_loss_and_accuracy(model, loader, criterion, device):
+
+def full_loss_and_accuracy(model, loader, criterion, device, max_batches=None):
     """Compute average loss and accuracy over an entire dataset."""
     model.eval()
 
@@ -71,7 +72,10 @@ def full_loss_and_accuracy(model, loader, criterion, device):
     total_correct = 0
     total_samples = 0
 
-    for x, y in loader:
+    for batch_idx, (x, y) in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+
         x, y = x.to(device), y.to(device)
 
         logits = model(x)
@@ -79,13 +83,12 @@ def full_loss_and_accuracy(model, loader, criterion, device):
 
         total_loss += loss.item() * y.size(0)
 
-        preds = logits.argmax(dim=1)
-        total_correct += (preds == y).sum().item()
-
         total_samples += y.size(0)
 
+    if total_samples == 0:
+        raise ValueError("No samples were provided to full_loss_and_accuracy.")
+
     return total_loss / total_samples, total_correct / total_samples
-    
 
 
 def gradient_norm(model, loader, criterion, device, max_batches=None):
@@ -236,6 +239,7 @@ def max_loss_in_neighbourhood(
     device,
     relative_radius=1e-2,
     samples=20,
+    max_batches=8,
 ):
     """
     Randomly sample scale-independent perturbations and report the largest loss increase.
@@ -244,7 +248,7 @@ def max_loss_in_neighbourhood(
 
     """
     base_state = copy.deepcopy(model.state_dict())
-    base_loss, _ = full_loss_and_accuracy(model, loader, criterion, device)
+    base_loss, _ = full_loss_and_accuracy(model, loader, criterion, device, max_batches=max_batches)
 
     max_loss = -math.inf
     max_delta = None
@@ -256,7 +260,7 @@ def max_loss_in_neighbourhood(
 
         add_direction_to_model(model, base_state, direction, scale)
 
-        loss, _ = full_loss_and_accuracy(model, loader, criterion, device)
+        loss, _ = full_loss_and_accuracy(model, loader, criterion, device, max_batches=max_batches)
         delta = loss - base_loss
         sharpness_deltas.append(delta)
 
