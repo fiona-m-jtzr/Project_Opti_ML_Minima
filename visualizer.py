@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Aggregate W&B minimum-analysis artifacts and plot summary diagnostics.
 
-This variant plots both RAW and NORMALIZED Hessian metrics produced by the
+This variant plots both RAW and NORMALIZED Hessian metrics plus both
+scale-invariant and element-wise adaptive sharpness curves produced by the
 analysis script:
 - raw top Hessian eigenvalue, taken as raw_top_eigenvalues[0];
 - normalized top Hessian eigenvalue, taken as normalized_top_eigenvalue;
@@ -17,7 +18,10 @@ The W&B loading path intentionally mirrors the original script:
 - keep only the newest version of each analysis artifact collection;
 - load the first JSON file found in each downloaded artifact.
 
-The plotting/averaging path is configurable from the CLI.
+The plotting/averaging path is configurable from the CLI. Adaptive sharpness
+is read from elementwise_adaptive_sharpness_by_radius, whose curve radius key is
+rho in the analyzer output. The --model-family option filters W&B analysis
+artifacts by collection name before any artifact JSON is downloaded.
 """
 
 from __future__ import annotations
@@ -38,6 +42,11 @@ import wandb
 
 
 PROJECT = "OptiML_Minima"
+
+MODEL_FAMILY_ARTIFACT_MARKERS = {
+    "resnet20": "model-resnet20",
+    "vit": "model-vit",
+}
 
 SUMMARY_METRICS = (
     "train_loss",
@@ -94,6 +103,13 @@ def average_numeric(values: Iterable[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
+def finite_real(value: Any) -> float | None:
+    """Return value as a finite float, otherwise None."""
+    if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
 def get_nested(dct: dict[str, Any], *keys: str) -> Any:
     """Read a nested dictionary value, returning None if any level is missing."""
     value: Any = dct
@@ -108,11 +124,6 @@ def hessian_metric_value(result: dict[str, Any], metric: str) -> Any:
     """Read Hessian metrics with compatibility for older analysis JSON files."""
     hessian_metrics = result.get("hessian_metrics")
     if not isinstance(hessian_metrics, dict):
-        return None
-
-    def finite_real(value: Any) -> float | None:
-        if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
-            return float(value)
         return None
 
     def raw_top_eigenvalue() -> float | None:
@@ -193,21 +204,37 @@ def load_json_from_artifact(artifact: Any) -> dict[str, Any]:
         return json.load(f)
 
 
-def collect_analysis_results(project: str = PROJECT) -> list[dict[str, Any]]:
+def artifact_matches_model_family(artifact_name: str, model_family: str) -> bool:
+    """Return whether an artifact collection/name belongs to the selected model family."""
+    marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
+    return marker in artifact_name.lower()
+
+
+def collect_analysis_results(
+    project: str = PROJECT,
+    *,
+    model_family: str = "resnet20",
+) -> list[dict[str, Any]]:
     api = wandb.Api()
     entity = api.default_entity
     runs = api.runs(f"{entity}/{project}")
 
     latest_by_collection = {}
+    skipped_by_model_family = 0
 
     for run in runs:
         for artifact in run.logged_artifacts():
             if artifact.type != "analysis":
                 continue
 
-            # Example collection name:
-            # model-sgd_lr0.1_seed42-minimum-analysis:v3 -> model-sgd_lr0.1_seed42-minimum-analysis
+            # Example collection names:
+            # model-resnet20-sgd_lr0.1_seed42-minimum-analysis:v3 -> model-resnet20-sgd_lr0.1_seed42-minimum-analysis
+            # model-vit-adamw_lr0.001_seed42-minimum-analysis:v2 -> model-vit-adamw_lr0.001_seed42-minimum-analysis
             collection = artifact.name.split(":")[0]
+
+            if not artifact_matches_model_family(collection, model_family):
+                skipped_by_model_family += 1
+                continue
 
             if (
                 collection not in latest_by_collection
@@ -215,12 +242,19 @@ def collect_analysis_results(project: str = PROJECT) -> list[dict[str, Any]]:
             ):
                 latest_by_collection[collection] = artifact
 
+    marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
+    print(
+        f"Model-family filter: keeping analysis artifacts whose collection name contains "
+        f"{marker!r}; skipped {skipped_by_model_family} non-matching analysis artifact version(s)."
+    )
+
     results: list[dict[str, Any]] = []
 
     for artifact in latest_by_collection.values():
         try:
             data = load_json_from_artifact(artifact)
             data["_artifact_name"] = artifact.name
+            data["_model_family"] = model_family
             results.append(data)
             print(f"Loaded latest {artifact.name}")
         except Exception as exc:  # keep collecting even if one artifact is bad
@@ -235,10 +269,12 @@ def collect_analysis_results(project: str = PROJECT) -> list[dict[str, Any]]:
 
 
 def parse_run_name(name: str) -> dict[str, Any]:
-    """Parse optimizer/config metadata from artifact or run names."""
+    """Parse model/optimizer/config metadata from artifact or run names."""
     name = name.replace("-minimum-analysis", "")
+    name_lower = name.lower()
 
     info: dict[str, Any] = {
+        "model_family": None,
         "optimizer": "unknown",
         "lr": None,
         "bs": None,
@@ -248,9 +284,21 @@ def parse_run_name(name: str) -> dict[str, Any]:
         "schedule": None,
     }
 
-    opt_match = re.search(r"model-([a-zA-Z0-9]+)", name)
-    if opt_match:
-        info["optimizer"] = opt_match.group(1).lower()
+    family_match = re.search(r"model-(resnet20|vit)(?:[_-]|$)", name_lower)
+    if family_match:
+        info["model_family"] = family_match.group(1)
+
+        # Newer names can be model-resnet20-sgd_lr... or model-vit-adamw_lr...
+        # In that case, the optimizer is the token immediately after the model family.
+        after_family = name_lower[family_match.end():].lstrip("_-")
+        opt_match = re.match(r"([a-zA-Z][a-zA-Z0-9]*)(?=[_-]|$)", after_family)
+        if opt_match and not opt_match.group(1).startswith(("lr", "bs", "seed")):
+            info["optimizer"] = opt_match.group(1).lower()
+    else:
+        # Backward compatibility for older artifact names like model-sgd_lr0.1_seed42.
+        opt_match = re.search(r"model-([a-zA-Z0-9]+)", name_lower)
+        if opt_match:
+            info["optimizer"] = opt_match.group(1).lower()
 
     patterns = {
         "lr": r"_lr([0-9.eE+-]+)",
@@ -385,6 +433,75 @@ def average_sharpness_curves(group: list[dict[str, Any]]) -> list[dict[str, floa
     ]
 
 
+def average_adaptive_sharpness_curves(group: list[dict[str, Any]]) -> list[dict[str, float | None]]:
+    """Average element-wise adaptive sharpness curves by rho.
+
+    Analyzer compatibility:
+    - current analyzer output: result["elementwise_adaptive_sharpness_by_radius"]
+      with each point keyed by "rho";
+    - already-aggregated inputs: result["averaged_adaptive_sharpness_curve"].
+
+    The normalized adaptive delta is computed as sharpness_delta / base_loss,
+    using the adaptive point's own base_loss. This is important because adaptive
+    sharpness may use logit-normalized logits and a fixed subset of batches, so
+    the global raw train_loss is not always the correct denominator.
+    """
+    values_by_rho: dict[float, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+
+    for run in group:
+        curve = (
+            run.get("elementwise_adaptive_sharpness_by_radius")
+            or run.get("averaged_adaptive_sharpness_curve")
+            or []
+        )
+        if not curve:
+            continue
+
+        for point in curve:
+            if not isinstance(point, dict):
+                continue
+
+            rho = finite_real(point.get("rho"))
+            if rho is None:
+                # Accept relative_radius as a defensive fallback for hand-edited
+                # or older derived summaries, but analyzer.py emits rho.
+                rho = finite_real(point.get("relative_radius"))
+            if rho is None:
+                continue
+
+            sharpness_delta = finite_real(point.get("sharpness_delta"))
+            base_loss = finite_real(point.get("base_loss"))
+            perturbed_loss = finite_real(point.get("perturbed_loss"))
+            max_batch_delta = finite_real(point.get("max_batch_sharpness_delta"))
+
+            normalized_delta = finite_real(point.get("normalized_sharpness_delta"))
+            if normalized_delta is None and sharpness_delta is not None and base_loss not in (None, 0.0):
+                normalized_delta = sharpness_delta / base_loss
+
+            if sharpness_delta is not None:
+                values_by_rho[rho]["sharpness_delta"].append(sharpness_delta)
+            if normalized_delta is not None:
+                values_by_rho[rho]["normalized_sharpness_delta"].append(normalized_delta)
+            if base_loss is not None:
+                values_by_rho[rho]["base_loss"].append(base_loss)
+            if perturbed_loss is not None:
+                values_by_rho[rho]["perturbed_loss"].append(perturbed_loss)
+            if max_batch_delta is not None:
+                values_by_rho[rho]["max_batch_sharpness_delta"].append(max_batch_delta)
+
+    return [
+        {
+            "rho": rho,
+            "sharpness_delta": average_numeric(values.get("sharpness_delta", [])),
+            "normalized_sharpness_delta": average_numeric(values.get("normalized_sharpness_delta", [])),
+            "base_loss": average_numeric(values.get("base_loss", [])),
+            "perturbed_loss": average_numeric(values.get("perturbed_loss", [])),
+            "max_batch_sharpness_delta": average_numeric(values.get("max_batch_sharpness_delta", [])),
+        }
+        for rho, values in sorted(values_by_rho.items())
+    ]
+
+
 def average_group(
     group: list[dict[str, Any]],
     label: str,
@@ -407,6 +524,7 @@ def average_group(
     base["_num_runs"] = len(group)
     base["_averaged_over"] = group_by
     base["averaged_sharpness_curve"] = average_sharpness_curves(group)
+    base["averaged_adaptive_sharpness_curve"] = average_adaptive_sharpness_curves(group)
 
     base["_plot_meta"] = {
         "optimizer": common_value(meta["optimizer"] for meta in metas) or "mixed",
@@ -588,6 +706,61 @@ def plot_sharpness_curves(
         ax.set_axis_off()
 
 
+def plot_adaptive_sharpness_curves(
+    ax: Any,
+    results: list[dict[str, Any]],
+    color_map: dict[str, Any],
+) -> None:
+    """Plot loss-normalized element-wise adaptive sharpness against rho."""
+    plotted = False
+
+    for result in results:
+        meta = run_meta(result)
+        curve = result.get("averaged_adaptive_sharpness_curve") or []
+
+        if not curve:
+            # Fallback for unaveraged inputs.
+            curve = average_adaptive_sharpness_curves([result])
+
+        if not curve:
+            continue
+
+        points = [
+            point
+            for point in curve
+            if finite_real(point.get("rho")) is not None
+            and finite_real(point.get("normalized_sharpness_delta")) is not None
+        ]
+        if not points:
+            continue
+
+        rhos = [float(point["rho"]) for point in points]
+        deltas = [float(point["normalized_sharpness_delta"]) for point in points]
+
+        ax.plot(
+            rhos,
+            deltas,
+            marker="o",
+            linewidth=2,
+            alpha=0.9,
+            color=color_map[meta.get("color_label", "unknown")],
+            label=meta.get("group_label", result_name(result)),
+        )
+        plotted = True
+
+    ax.set_title("Loss-Normalized Element-Wise Adaptive Sharpness by Rho")
+    ax.set_xscale("log")
+    ax.set_xlabel("adaptive radius rho")
+    ax.set_ylabel("adaptive sharpness delta / adaptive base loss")
+    ax.grid(True, alpha=0.3)
+
+    if plotted:
+        ax.legend(fontsize=7)
+    else:
+        ax.text(0.5, 0.5, "No adaptive sharpness curves", ha="center", va="center")
+        ax.set_axis_off()
+
+
 def add_color_legend(fig: Any, color_map: dict[str, Any], title: str) -> None:
     handles = [
         Line2D(
@@ -632,13 +805,14 @@ def plot_results(
     group_by: str,
     sort_bars: str,
     show: bool,
+    model_family: str,
 ) -> None:
     if not results:
         raise RuntimeError("No analysis results found after filtering/grouping.")
 
     color_map = build_color_map(results)
 
-    n_panels = len(PLOT_METRICS) + 1  # summary bars plus the sharpness curve panel
+    n_panels = len(PLOT_METRICS) + 2  # summary bars plus sampled and adaptive sharpness curve panels
     n_cols = 2
     n_rows = math.ceil(n_panels / n_cols)
 
@@ -651,11 +825,14 @@ def plot_results(
     sharpness_ax = axes[len(PLOT_METRICS)]
     plot_sharpness_curves(sharpness_ax, results, color_map)
 
+    adaptive_sharpness_ax = axes[len(PLOT_METRICS) + 1]
+    plot_adaptive_sharpness_curves(adaptive_sharpness_ax, results, color_map)
+
     for ax in axes[n_panels:]:
         ax.set_axis_off()
 
     fig.suptitle(
-        f"Minimum analysis summary | scope={scope} | grouped by={group_by} | bars={sort_bars} | raw + normalized Hessian metrics",
+        f"Minimum analysis summary | model={model_family} | scope={scope} | grouped by={group_by} | bars={sort_bars} | raw + normalized Hessian + sharpness metrics",
         fontsize=16,
     )
     add_color_legend(fig, color_map, color_legend_title(scope, group_by))
@@ -676,10 +853,19 @@ def plot_results(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Load W&B minimum-analysis artifacts, average them, and plot summary metrics with raw and normalized Hessian values."
+        description="Load W&B minimum-analysis artifacts, average them, and plot summary metrics with raw/normalized Hessian and sharpness values."
     )
-    parser.add_argument("--output", default="minimum_analysis_summary_raw_and_normalized_hessian.png")
+    parser.add_argument("--output", default="minimum_analysis_summary_with_adaptive_sharpness.png")
     parser.add_argument("--project", default=PROJECT)
+    parser.add_argument(
+        "--model-family",
+        choices=tuple(MODEL_FAMILY_ARTIFACT_MARKERS),
+        default="resnet20",
+        help=(
+            "Only load analysis artifacts whose collection name contains the selected "
+            "model marker: model-resnet20 or model-vit."
+        ),
+    )
     parser.add_argument(
         "--scope",
         choices=("all", "sgd"),
@@ -713,7 +899,7 @@ def main() -> None:
     args = parse_args()
     group_by = resolve_group_by(args.scope, args.group_by)
 
-    results = collect_analysis_results(project=args.project)
+    results = collect_analysis_results(project=args.project, model_family=args.model_family)
     averaged = average_results(results, scope=args.scope, group_by=group_by)
 
     plot_results(
@@ -723,6 +909,7 @@ def main() -> None:
         group_by=group_by,
         sort_bars=args.sort_bars,
         show=not args.no_show,
+        model_family=args.model_family,
     )
 
 
