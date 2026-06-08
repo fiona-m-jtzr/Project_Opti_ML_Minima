@@ -1,5 +1,5 @@
 import torch
-import utils
+import sharpness_vs_generalization.utils as utils
 import copy
 import math
 from functools import partial
@@ -185,7 +185,7 @@ def eval_APGD_sharpness(
     del train_loss
     gradient_step_kwargs = kwargs.get('gradient_step_kwargs', {})
 
-    init_fn = partial(random_init_lw, norm=norm, adaptive=adaptive),
+    init_fn = partial(random_init_lw, norm=norm, adaptive=adaptive)
 
     def get_loss_and_err(model, loss_fn, x, y):
         """Compute loss and class. error on a single batch."""
