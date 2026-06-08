@@ -9,11 +9,13 @@ import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from models.resnet20 import ResNet20
+from models.vit import ViTCIFAR10
 import os
 import tempfile
 import wandb
 from pathlib import Path
 import argparse
+import re
 
 from hessian.hessian import hessian
 
@@ -796,6 +798,46 @@ def _safe_artifact_suffix(value):
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(value))
     return safe.strip("-_") or "artifact"
 
+# Adapt model architecture to artifact name from training run.
+
+def build_model_for_analysis(model_name):
+    model_name = model_name.lower()
+
+    if model_name == "resnet20":
+        return ResNet20(num_classes=10)
+
+    if model_name == "vit":
+        return ViTCIFAR10(
+            img_size=32,
+            patch_size=4,
+            num_classes=10,
+            embed_dim=256,
+            depth=6,
+            num_heads=8,
+            mlp_ratio=4.0,
+        )
+
+    raise ValueError(f"Unknown model: {model_name}")
+
+def extract_model_name_from_run_name(run_name: str) -> str:
+    """
+    Examples:
+      model-FINAL_MODEL_resnet20_sgd_mom0.9_nesterov_lr0.1_wd0.0_bs128_cosine_seed1
+        -> resnet20
+
+      model-FINAL_MODEL_vit_sam_rho0.05_baseadam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1
+        -> vit
+    """
+    name = run_name.split(":", 1)[0]  # remove optional W&B alias, e.g. :latest
+
+    if name.startswith("model-"):
+        name = name[len("model-"):]
+
+    match = re.match(r"^FINAL_MODEL_(resnet20|vit)(?:_|$)", name)
+    if match is None:
+        raise ValueError(f"Could not extract model name from run name: {run_name}")
+
+    return match.group(1)
 
 # -----------------------------
 # Main analysis
@@ -878,8 +920,8 @@ def analyze(
     # Load model and data
     trainloader, testloader = get_loaders(batch_size)
     criterion = nn.CrossEntropyLoss()
-
-    model = ResNet20(num_classes=10).to(device)
+    model_name = extract_model_name_from_run_name(run_name)
+    model = build_model_for_analysis(model_name).to(device)
     model.load_state_dict(state_dict)
     # Compute metrics
     print("-" * 50)
