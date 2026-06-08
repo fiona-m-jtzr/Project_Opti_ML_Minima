@@ -790,6 +790,13 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+
+def _safe_artifact_suffix(value):
+    """Return a W&B-artifact-name-safe suffix for aliases such as latest, v12, or best."""
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(value))
+    return safe.strip("-_") or "artifact"
+
+
 # -----------------------------
 # Main analysis
 # -----------------------------
@@ -805,8 +812,17 @@ def analyze(
     adaptive_sharpness_logit_normalize=True,
     adaptive_sharpness_average_batches=True,
     skip_adaptive_sharpness=False,
+    artifact_alias="latest",
+    analysis_artifact_name=None,
 ):
-    print(f"Analyzing Launched for: {run_name}")
+    artifact_alias = str(artifact_alias)
+    artifact_suffix = _safe_artifact_suffix(artifact_alias)
+    if analysis_artifact_name is None:
+        analysis_artifact_name = f"{run_name}-minimum-analysis"
+        if artifact_suffix != "latest":
+            analysis_artifact_name = f"{analysis_artifact_name}-{artifact_suffix}"
+
+    print(f"Analyzing Launched for: {run_name}:{artifact_alias}")
     set_seed(42)
     # Configure device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -814,12 +830,18 @@ def analyze(
     print("-" * 50)
     # Configure wandb
     print("Initializing Weights & Biases run...")
+    analysis_run_name = f"{run_name}_minimum_analysis"
+    if artifact_suffix != "latest":
+        analysis_run_name = f"{run_name}_{artifact_suffix}_minimum_analysis"
+
     wandb_run = wandb.init(
         project="OptiML_Minima",
-        name=f"{run_name}_minimum_analysis",
+        name=analysis_run_name,
         job_type="minimum-analysis",
         config={
             "source_run_name": run_name,
+            "source_artifact_alias": artifact_alias,
+            "analysis_artifact_name": analysis_artifact_name,
             "batch_size": batch_size,
             "relative_radii": list(relative_radii),
             "samples_per_radius": samples_per_radius,
@@ -833,10 +855,12 @@ def analyze(
         },
     )
 
-    artifact = wandb_run.use_artifact(
-        f"{wandb_run.entity}/OptiML_Minima/{run_name}:latest",
-        type="model",
-    )
+    source_artifact_ref = f"{wandb_run.entity}/OptiML_Minima/{run_name}:{artifact_alias}"
+    artifact = wandb_run.use_artifact(source_artifact_ref, type="model")
+    resolved_artifact_name = getattr(artifact, "name", f"{run_name}:{artifact_alias}")
+    resolved_artifact_version = resolved_artifact_name.split(":", 1)[1] if ":" in resolved_artifact_name else artifact_alias
+    resolved_artifact_aliases = list(getattr(artifact, "aliases", []) or [])
+
     artifact_dir = artifact.download()
     ckpt_path = Path(artifact_dir) / "best.pt"
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -915,7 +939,12 @@ def analyze(
     results = {
         # Metadata
         "source_run_name": run_name,
-        "source_artifact": f"{run_name}:latest",
+        "source_artifact": f"{run_name}:{artifact_alias}",
+        "source_artifact_ref": source_artifact_ref,
+        "resolved_source_artifact": resolved_artifact_name,
+        "resolved_source_artifact_version": resolved_artifact_version,
+        "resolved_source_artifact_aliases": resolved_artifact_aliases,
+        "analysis_artifact_name": analysis_artifact_name,
         "checkpoint_metadata": checkpoint_metadata,
         # Results
         "train_loss": train_loss,
@@ -930,24 +959,48 @@ def analyze(
         "elementwise_adaptive_sharpness_by_radius": adaptive_sharpness_by_radius,
     }
 
-    results_path = Path("minimum_analysis.json")
+    results_filename = "minimum_analysis.json"
+    if artifact_suffix != "latest":
+        results_filename = f"minimum_analysis_{artifact_suffix}.json"
+    results_path = Path(results_filename)
     with open(results_path, "w") as f:
         json.dump(_json_safe(results), f, indent=2)
 
     result_artifact = wandb.Artifact(
-        f"{run_name}-minimum-analysis",
+        analysis_artifact_name,
         type="analysis",
+        metadata={
+            "source_artifact": f"{run_name}:{artifact_alias}",
+            "resolved_source_artifact": resolved_artifact_name,
+        },
     )
-    result_artifact.add_file(results_path)
+    result_artifact.add_file(results_path, name=results_filename)
     wandb_run.log_artifact(result_artifact)
 
     wandb_run.finish()
-    print(f"Results saved to {results_path} and logged to Weights & Biases artifact {result_artifact.name}.")
+    print(
+        f"Results saved to {results_path} and logged to Weights & Biases artifact "
+        f"{result_artifact.name}."
+    )
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_name", required=True)
+    parser.add_argument(
+        "--artifact_alias",
+        default="latest",
+        help="W&B model artifact alias/version to analyse, e.g. latest or v12.",
+    )
+    parser.add_argument(
+        "--analysis_artifact_name",
+        default=None,
+        help=(
+            "Optional W&B analysis artifact name. Defaults to "
+            "<run_name>-minimum-analysis for latest and "
+            "<run_name>-minimum-analysis-<artifact_alias> for explicit versions."
+        ),
+    )
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--samples_per_radius", type=int, default=20)
     parser.add_argument(
@@ -1014,6 +1067,8 @@ if __name__ == "__main__":
 
     analyze(
         run_name=args.run_name,
+        artifact_alias=args.artifact_alias,
+        analysis_artifact_name=args.analysis_artifact_name,
         batch_size=args.batch_size,
         samples_per_radius=args.samples_per_radius,
         adaptive_sharpness_rhos=adaptive_sharpness_rhos,
