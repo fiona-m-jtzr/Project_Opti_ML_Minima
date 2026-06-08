@@ -20,8 +20,10 @@ The W&B loading path intentionally mirrors the original script:
 
 The plotting/averaging path is configurable from the CLI. Adaptive sharpness
 is read from elementwise_adaptive_sharpness_by_radius, whose curve radius key is
-rho in the analyzer output. The --model-family option filters W&B analysis
-artifacts by collection name before any artifact JSON is downloaded.
+rho in the analyzer output. The script plots adaptive sharpness twice: once as
+the raw absolute loss increase and once normalized by the adaptive base loss.
+The --model-family option filters W&B analysis artifacts by collection name
+before any artifact JSON is downloaded.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ import wandb
 PROJECT = "OptiML_Minima"
 
 MODEL_FAMILY_ARTIFACT_MARKERS = {
+    # Strictly accept only the current model-final_* artifact naming convention.
     "resnet20": "model-final_model_resnet20",
     "vit": "model-final_model_vit",
 }
@@ -91,23 +94,31 @@ PLOT_METRICS = (
 # -----------------------------------------------------------------------------
 
 
+def finite_real(value: Any) -> float | None:
+    """Return value as a finite float, otherwise None.
+
+    W&B JSONs should store these fields as numbers, but this also accepts
+    numeric strings from hand-edited or older summaries so that bar panels do
+    not disappear because of a type mismatch.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, Real):
+        out = float(value)
+        return out if math.isfinite(out) else None
+    if isinstance(value, str):
+        try:
+            out = float(value)
+        except ValueError:
+            return None
+        return out if math.isfinite(out) else None
+    return None
+
+
 def average_numeric(values: Iterable[Any]) -> float | None:
     """Return the finite numeric mean, ignoring None/non-numeric values."""
-    clean = [
-        float(value)
-        for value in values
-        if isinstance(value, Real)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    ]
+    clean = [value for value in (finite_real(value) for value in values) if value is not None]
     return sum(clean) / len(clean) if clean else None
-
-
-def finite_real(value: Any) -> float | None:
-    """Return value as a finite float, otherwise None."""
-    if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value)):
-        return float(value)
-    return None
 
 
 def get_nested(dct: dict[str, Any], *keys: str) -> Any:
@@ -205,9 +216,13 @@ def load_json_from_artifact(artifact: Any) -> dict[str, Any]:
 
 
 def artifact_matches_model_family(artifact_name: str, model_family: str) -> bool:
-    """Return whether an artifact collection/name belongs to the selected model family."""
-    marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
-    return marker.lower() in artifact_name.lower()
+    """Return whether an artifact collection/name uses the strict model-final_* convention."""
+    marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family].lower()
+    name_lower = artifact_name.lower()
+
+    # Strict filter: do not accept older aliases such as model-resnet20, model_resnet20,
+    # or bare resnet20/vit. The collection must contain the model-final_model_* marker.
+    return marker in name_lower
 
 
 def collect_analysis_results(
@@ -242,10 +257,10 @@ def collect_analysis_results(
             ):
                 latest_by_collection[collection] = artifact
 
-    marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
+    markers = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
     print(
-        f"Model-family filter: keeping analysis artifacts whose collection name contains "
-        f"{marker!r}; skipped {skipped_by_model_family} non-matching analysis artifact version(s)."
+        f"Model-family filter: keeping analysis artifacts matching any of "
+        f"{markers!r}; skipped {skipped_by_model_family} non-matching analysis artifact version(s)."
     )
 
     results: list[dict[str, Any]] = []
@@ -260,6 +275,7 @@ def collect_analysis_results(
         except Exception as exc:  # keep collecting even if one artifact is bad
             print(f"Skipping {artifact.name}: {exc}")
 
+    print(f"Loaded {len(results)} latest analysis artifact JSON file(s) after filtering.")
     return results
 
 
@@ -645,11 +661,12 @@ def bar_metric(
     color_map: dict[str, Any],
     sort_bars: str,
 ) -> None:
-    clean = [
-        (result, metric_value(result, metric_key))
-        for result in results
-        if metric_value(result, metric_key) is not None
-    ]
+    clean: list[tuple[dict[str, Any], float]] = []
+    for result in results:
+        value = finite_real(metric_value(result, metric_key))
+        if value is not None:
+            clean.append((result, value))
+
     clean.sort(key=lambda item: item[1], reverse=(sort_bars == "descending"))
 
     ax.set_title(title)
@@ -662,17 +679,52 @@ def bar_metric(
     xs = list(range(len(clean)))
     values = [value for _, value in clean]
     metas = [run_meta(result) for result, _ in clean]
-    colors = [color_map[meta.get("color_label", "unknown")] for meta in metas]
+    colors = [color_map.get(meta.get("color_label", "unknown"), "0.5") for meta in metas]
     labels = [
         short_axis_label({**meta, "_num_runs": result.get("_num_runs")})
         for result, meta in zip((r for r, _ in clean), metas)
     ]
 
-    ax.bar(xs, values, color=colors, alpha=0.85)
+    bars = ax.bar(xs, values, color=colors, alpha=0.9, zorder=3)
     ax.set_ylabel(ylabel)
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(True, axis="y", alpha=0.3, zorder=0)
+
+    # Make accuracy panels visually explicit.  Without this, small train/test
+    # accuracy differences or a single grouped bar can be easy to miss in the
+    # large multi-panel figure preview.
+    metric_name = metric_key if isinstance(metric_key, str) else " / ".join(metric_key)
+    if "accuracy" in metric_name:
+        value_min = min(values)
+        value_max = max(values)
+        if 0.0 <= value_min and value_max <= 1.0:
+            ax.set_ylim(0.0, 1.0)
+            label_fmt = "{:.3f}"
+        else:
+            label_fmt = "{:.2f}"
+    else:
+        label_fmt = "{:.3g}"
+        value_min = min(values)
+        value_max = max(values)
+        if value_min >= 0:
+            ax.set_ylim(0, value_max * 1.15 if value_max > 0 else 1.0)
+        elif value_max <= 0:
+            ax.set_ylim(value_min * 1.15, 0)
+
+    # Matplotlib 3.4+; keep a fallback for older local installs.
+    try:
+        ax.bar_label(bars, labels=[label_fmt.format(v) for v in values], fontsize=7, padding=2)
+    except AttributeError:
+        for bar, value in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value,
+                label_fmt.format(value),
+                ha="center",
+                va="bottom" if value >= 0 else "top",
+                fontsize=7,
+            )
 
 
 def plot_sharpness_curves(
@@ -724,9 +776,17 @@ def plot_adaptive_sharpness_curves(
     ax: Any,
     results: list[dict[str, Any]],
     color_map: dict[str, Any],
+    *,
+    loss_normalized: bool,
 ) -> None:
-    """Plot loss-normalized element-wise adaptive sharpness against rho."""
+    """Plot element-wise adaptive sharpness against rho.
+
+    loss_normalized=False plots the paper-style absolute loss increase
+    L(w + delta) - L(w). loss_normalized=True plots that value divided by
+    the adaptive base loss from the same evaluation point.
+    """
     plotted = False
+    value_key = "normalized_sharpness_delta" if loss_normalized else "sharpness_delta"
 
     for result in results:
         meta = run_meta(result)
@@ -743,13 +803,13 @@ def plot_adaptive_sharpness_curves(
             point
             for point in curve
             if finite_real(point.get("rho")) is not None
-            and finite_real(point.get("normalized_sharpness_delta")) is not None
+            and finite_real(point.get(value_key)) is not None
         ]
         if not points:
             continue
 
         rhos = [float(point["rho"]) for point in points]
-        deltas = [float(point["normalized_sharpness_delta"]) for point in points]
+        deltas = [float(point[value_key]) for point in points]
 
         ax.plot(
             rhos,
@@ -762,16 +822,22 @@ def plot_adaptive_sharpness_curves(
         )
         plotted = True
 
-    ax.set_title("Loss-Normalized Element-Wise Adaptive Sharpness by Rho")
+    if loss_normalized:
+        ax.set_title("Loss-Normalized Element-Wise Adaptive Sharpness by Rho")
+        ax.set_ylabel("adaptive sharpness delta / adaptive base loss")
+    else:
+        ax.set_title("Element-Wise Adaptive Sharpness by Rho")
+        ax.set_ylabel("adaptive sharpness delta")
+
     ax.set_xscale("log")
     ax.set_xlabel("adaptive radius rho")
-    ax.set_ylabel("adaptive sharpness delta / adaptive base loss")
     ax.grid(True, alpha=0.3)
 
     if plotted:
         ax.legend(fontsize=7)
     else:
-        ax.text(0.5, 0.5, "No adaptive sharpness curves", ha="center", va="center")
+        label = "loss-normalized adaptive sharpness curves" if loss_normalized else "adaptive sharpness curves"
+        ax.text(0.5, 0.5, f"No {label}", ha="center", va="center")
         ax.set_axis_off()
 
 
@@ -825,8 +891,9 @@ def plot_results(
         raise RuntimeError("No analysis results found after filtering/grouping.")
 
     color_map = build_color_map(results)
+    print(f"Plotting {len(results)} grouped result(s): {[result_name(result) for result in results]}")
 
-    n_panels = len(PLOT_METRICS) + 2  # summary bars plus sampled and adaptive sharpness curve panels
+    n_panels = len(PLOT_METRICS) + 1  # summary bars plus sampled, raw adaptive, and loss-normalized adaptive curve panels
     n_cols = 2
     n_rows = math.ceil(n_panels / n_cols)
 
@@ -836,11 +903,24 @@ def plot_results(
     for ax, (metric_key, title, ylabel) in zip(axes, PLOT_METRICS):
         bar_metric(ax, results, metric_key, title, ylabel, color_map, sort_bars)
 
-    sharpness_ax = axes[len(PLOT_METRICS)]
-    plot_sharpness_curves(sharpness_ax, results, color_map)
+    #sharpness_ax = axes[len(PLOT_METRICS)]
+    #plot_sharpness_curves(sharpness_ax, results, color_map)
 
-    adaptive_sharpness_ax = axes[len(PLOT_METRICS) + 1]
-    plot_adaptive_sharpness_curves(adaptive_sharpness_ax, results, color_map)
+    adaptive_sharpness_ax = axes[len(PLOT_METRICS)]# + 1]
+    plot_adaptive_sharpness_curves(
+        adaptive_sharpness_ax,
+        results,
+        color_map,
+        loss_normalized=False,
+    )
+
+    """normalized_adaptive_sharpness_ax = axes[len(PLOT_METRICS) + 2]
+    plot_adaptive_sharpness_curves(
+        normalized_adaptive_sharpness_ax,
+        results,
+        color_map,
+        loss_normalized=True,
+    )"""
 
     for ax in axes[n_panels:]:
         ax.set_axis_off()
@@ -876,8 +956,8 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(MODEL_FAMILY_ARTIFACT_MARKERS),
         default="resnet20",
         help=(
-            "Only load analysis artifacts whose collection name contains the selected "
-            "model marker: model-resnet20 or model-vit."
+            "Only load analysis artifacts matching the selected model family. "
+            "Accepts both model-resnet20/model-vit and model-final_model_* names."
         ),
     )
     parser.add_argument(
