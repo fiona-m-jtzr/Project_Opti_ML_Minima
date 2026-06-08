@@ -44,8 +44,8 @@ import wandb
 PROJECT = "OptiML_Minima"
 
 MODEL_FAMILY_ARTIFACT_MARKERS = {
-    "resnet20": "model-resnet20",
-    "vit": "model-vit",
+    "resnet20": "model-final_model_resnet20",
+    "vit": "model-final_model_vit",
 }
 
 SUMMARY_METRICS = (
@@ -207,7 +207,7 @@ def load_json_from_artifact(artifact: Any) -> dict[str, Any]:
 def artifact_matches_model_family(artifact_name: str, model_family: str) -> bool:
     """Return whether an artifact collection/name belongs to the selected model family."""
     marker = MODEL_FAMILY_ARTIFACT_MARKERS[model_family]
-    return marker in artifact_name.lower()
+    return marker.lower() in artifact_name.lower()
 
 
 def collect_analysis_results(
@@ -270,7 +270,11 @@ def collect_analysis_results(
 
 def parse_run_name(name: str) -> dict[str, Any]:
     """Parse model/optimizer/config metadata from artifact or run names."""
-    name = name.replace("-minimum-analysis", "")
+    name = (
+        name
+        .replace("-minimum-analysis", "")
+        .replace("_minimum_analysis", "")
+    )
     name_lower = name.lower()
 
     info: dict[str, Any] = {
@@ -284,19 +288,29 @@ def parse_run_name(name: str) -> dict[str, Any]:
         "schedule": None,
     }
 
-    family_match = re.search(r"model-(resnet20|vit)(?:[_-]|$)", name_lower)
+    # Handles:
+    # model-FINAL_MODEL_resnet20_sgd_mom0.9_...
+    # model-final_model_resnet20_sgd_mom0.9_...
+    # model-resnet20-sgd_lr0.1_seed42
+    # model-vit-adamw_lr0.001_seed42
+    family_match = re.search(
+        r"model[-_](?:final_model[-_])?(resnet20|vit)(?:[_-]|$)",
+        name_lower,
+    )
+
     if family_match:
         info["model_family"] = family_match.group(1)
 
-        # Newer names can be model-resnet20-sgd_lr... or model-vit-adamw_lr...
-        # In that case, the optimizer is the token immediately after the model family.
         after_family = name_lower[family_match.end():].lstrip("_-")
         opt_match = re.match(r"([a-zA-Z][a-zA-Z0-9]*)(?=[_-]|$)", after_family)
-        if opt_match and not opt_match.group(1).startswith(("lr", "bs", "seed")):
+
+        if opt_match and not opt_match.group(1).startswith(("lr", "bs", "seed", "mom", "wd")):
             info["optimizer"] = opt_match.group(1).lower()
     else:
-        # Backward compatibility for older artifact names like model-sgd_lr0.1_seed42.
-        opt_match = re.search(r"model-([a-zA-Z0-9]+)", name_lower)
+        opt_match = re.search(
+            r"model[-_](?:final_model[-_])?(?:resnet20|vit)[_-]([a-zA-Z][a-zA-Z0-9]*)",
+            name_lower,
+        )
         if opt_match:
             info["optimizer"] = opt_match.group(1).lower()
 
@@ -315,9 +329,9 @@ def parse_run_name(name: str) -> dict[str, Any]:
         raw_value = match.group(1)
         info[key] = int(raw_value) if key in {"bs", "seed"} else float(raw_value)
 
-    info["nesterov"] = "_nesterov" in name
+    info["nesterov"] = "_nesterov" in name_lower
 
-    schedule_match = re.search(r"_bs[0-9]+_([a-zA-Z0-9]+)_seed", name)
+    schedule_match = re.search(r"_bs[0-9]+_([a-zA-Z0-9]+)_seed", name_lower)
     if schedule_match:
         info["schedule"] = schedule_match.group(1)
 
