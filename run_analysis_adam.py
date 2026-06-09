@@ -339,7 +339,7 @@ def main():
         for artifact in artifacts:
             _collection, artifact_version = parse_artifact_collection_and_version(artifact)
             artifact_ref = f"{entity}/{PROJECT}/{run_name}:{artifact_version}"
-            analysis_artifact_name = f"{run_name}-minimum-analysis-{artifact_version}"
+            analysis_artifact_name = f"{run_name}-min_grad_analysis-{artifact_version}"
 
             print("-" * 80)
             print(f"Analyzing Adam model artifact: {artifact_ref}")
