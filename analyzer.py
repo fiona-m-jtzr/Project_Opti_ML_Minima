@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as T
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from models.resnet20 import ResNet20
 from models.vit import ViTCIFAR10
 import os
@@ -47,9 +47,16 @@ def get_loaders(batch_size=128):
         T.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    trainset = torchvision.datasets.CIFAR10(
+    train_full = torchvision.datasets.CIFAR10(
         root="./data", train=True, download=True, transform=transform
     )
+    val_size   = int(len(train_full) * 0.1)
+    train_size = len(train_full) - val_size
+    trainset, _ = random_split(
+        train_full, [train_size, val_size],
+        generator=torch.Generator().manual_seed(42),
+    )
+
     testset = torchvision.datasets.CIFAR10(
         root="./data", train=False, download=True, transform=transform
     )
