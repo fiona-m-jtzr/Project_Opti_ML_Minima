@@ -1,17 +1,22 @@
 """
 Compare training-style and analyzer-style gradient norms for a saved W&B model artifact.
 
+Corrected version:
+- Restores the checkpoint state before every metric.
+- Prevents train-mode BatchNorm passes from changing the eval-mode measurement.
+- Supports both:
+    train45k = RUN.py training split
+    full50k  = analyzer.py full CIFAR-10 training set
+
 Example:
-python compare_grad_norms.py \
+python compare_grad_norms_corrected.py \
   --artifact FINAL_MODEL_resnet20_sgd_mom0.9_lr0.1_wd0.0_bs128_cosine_seed1 \
   --checkpoint_file min_grad.pt \
-  --split train45k
-
-You can also pass:
-  --artifact model-FINAL_MODEL_resnet20_sgd_mom0.9_lr0.1_wd0.0_bs128_cosine_seed1:latest
+  --split full50k
 """
 
 import argparse
+import copy
 import re
 from pathlib import Path
 
@@ -48,11 +53,6 @@ def normalize_artifact_name(name: str) -> str:
 
 
 def extract_model_name(artifact_name: str) -> str:
-    """
-    Works with:
-      model-FINAL_MODEL_resnet20_sgd_...:latest
-      model-FINAL_MODEL_vit_adam_...:v12
-    """
     name = artifact_name.split("/")[-1]
     name = name.split(":", 1)[0]
 
@@ -112,6 +112,16 @@ def get_state_dict(ckpt):
     if isinstance(ckpt, dict) and "model" in ckpt:
         return ckpt["model"]
     return ckpt
+
+
+def clone_state_dict(state_dict):
+    """
+    Clone tensors so later BatchNorm buffer updates cannot mutate the saved reference.
+    """
+    return {
+        k: v.detach().clone()
+        for k, v in state_dict.items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +185,11 @@ def l2_norm_of_current_grads(model):
 
 def training_style_mean_batch_grad_norm(model, loader, criterion, device, mode="train"):
     """
-    Closest fixed-checkpoint version of the training script's metric:
+    Fixed-checkpoint version of the training script's metric:
 
       average over batches of ||grad batch mean loss||_2
 
-    Important difference from the actual training loop:
+    Difference from actual training:
       this does not call optimizer.step(), so all batches are evaluated
       at the same checkpoint.
     """
@@ -191,6 +201,8 @@ def training_style_mean_batch_grad_norm(model, loader, criterion, device, mode="
         model.eval()
     else:
         raise ValueError(f"Unknown mode: {mode}")
+
+    model.zero_grad(set_to_none=True)
 
     grad_norm_sum = 0.0
     num_batches = 0
@@ -262,6 +274,18 @@ def full_dataset_mean_grad_norm(model, loader, criterion, device, mode="eval"):
     return out
 
 
+def run_metric_from_checkpoint(model, checkpoint_state, metric_fn, *args, **kwargs):
+    """
+    Restore the exact checkpoint state before each metric.
+
+    This matters because train-mode BatchNorm updates running_mean/running_var.
+    Without this, a train-mode metric can change the later eval-mode metric.
+    """
+    model.load_state_dict(checkpoint_state, strict=True)
+    model.zero_grad(set_to_none=True)
+    return metric_fn(model, *args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -312,9 +336,12 @@ def main():
         device=device,
     )
 
+    state_dict = get_state_dict(ckpt)
+    checkpoint_state = clone_state_dict(state_dict)
+
     model_name = args.model or extract_model_name(artifact_ref)
     model = build_model(model_name).to(device)
-    model.load_state_dict(get_state_dict(ckpt))
+    model.load_state_dict(checkpoint_state, strict=True)
 
     loader = get_cifar10_loader(
         data_dir=args.data_dir,
@@ -341,32 +368,40 @@ def main():
 
     print("-" * 80)
 
-    training_style_train_mode = training_style_mean_batch_grad_norm(
-        model=model,
+    training_style_train_mode = run_metric_from_checkpoint(
+        model,
+        checkpoint_state,
+        training_style_mean_batch_grad_norm,
         loader=loader,
         criterion=criterion,
         device=device,
         mode="train",
     )
 
-    training_style_eval_mode = training_style_mean_batch_grad_norm(
-        model=model,
+    training_style_eval_mode = run_metric_from_checkpoint(
+        model,
+        checkpoint_state,
+        training_style_mean_batch_grad_norm,
         loader=loader,
         criterion=criterion,
         device=device,
         mode="eval",
     )
 
-    full_grad_train_mode = full_dataset_mean_grad_norm(
-        model=model,
+    full_grad_train_mode = run_metric_from_checkpoint(
+        model,
+        checkpoint_state,
+        full_dataset_mean_grad_norm,
         loader=loader,
         criterion=criterion,
         device=device,
         mode="train",
     )
 
-    full_grad_eval_mode = full_dataset_mean_grad_norm(
-        model=model,
+    full_grad_eval_mode = run_metric_from_checkpoint(
+        model,
+        checkpoint_state,
+        full_dataset_mean_grad_norm,
         loader=loader,
         criterion=criterion,
         device=device,
@@ -387,6 +422,7 @@ def main():
         f"{full_grad_eval_mode / max(training_style_train_mode, 1e-30):.10g}"
     )
 
+    model.load_state_dict(checkpoint_state, strict=True)
     wandb_run.finish()
 
 
