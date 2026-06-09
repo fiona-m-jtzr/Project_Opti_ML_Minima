@@ -526,8 +526,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.3, 0.3, grid_resolution)
-steps_y = np.linspace(-0.3, 0.3, grid_resolution)
+steps_x = np.linspace(-0.05, 0.05, grid_resolution)
+steps_y = np.linspace(-0.05, 0.05, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
