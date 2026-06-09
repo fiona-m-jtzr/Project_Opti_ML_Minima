@@ -751,33 +751,6 @@ def _json_safe(obj):
 
 ## Wandb Model Loading and Result Logging
 
-def load_wandb_checkpoint(run, artifact_ref, filename="best.pt", device="cpu"):
-    artifact = run.use_artifact(artifact_ref, type="model")
-    artifact_dir = artifact.download()
-    ckpt_path = os.path.join(artifact_dir, filename)
-
-    ckpt = torch.load(ckpt_path, map_location=device)
-    return ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
-
-
-def log_results_artifact(run, results, artifact_name="minimum-analysis-results"):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, "minimum_analysis_scale_invariant.json")
-
-        with open(out_path, "w") as f:
-            json.dump(_json_safe(results), f, indent=2)
-
-        artifact = wandb.Artifact(
-            name=artifact_name,
-            type="analysis",
-            metadata={
-                "analysis": "minimum_analysis_scale_invariant",
-            },
-        )
-        artifact.add_file(out_path, name="minimum_analysis_scale_invariant.json")
-        run.log_artifact(artifact)
-
-
 ## Reproducibility
 def set_seed(seed=42):
     import random
@@ -872,9 +845,9 @@ def analyze(
     print("-" * 50)
     # Configure wandb
     print("Initializing Weights & Biases run...")
-    analysis_run_name = f"{run_name}_minimum_analysis"
+    analysis_run_name = f"{run_name}_min_grad_analysis"
     if artifact_suffix != "latest":
-        analysis_run_name = f"{run_name}_{artifact_suffix}_minimum_analysis"
+        analysis_run_name = f"{run_name}_{artifact_suffix}_min_grad_analysis"
 
     wandb_run = wandb.init(
         project="OptiML_Minima",
@@ -904,7 +877,7 @@ def analyze(
     resolved_artifact_aliases = list(getattr(artifact, "aliases", []) or [])
 
     artifact_dir = artifact.download()
-    ckpt_path = Path(artifact_dir) / "best.pt"
+    ckpt_path = Path(artifact_dir) / "min_grad.pt"#"best.pt"
     ckpt = torch.load(ckpt_path, map_location=device)
     checkpoint_metadata = {}
 
@@ -1001,16 +974,16 @@ def analyze(
         "elementwise_adaptive_sharpness_by_radius": adaptive_sharpness_by_radius,
     }
 
-    results_filename = "minimum_analysis.json"
+    results_filename = "min_grad_analysis.json"
     if artifact_suffix != "latest":
-        results_filename = f"minimum_analysis_{artifact_suffix}.json"
+        results_filename = f"min_grad_analysis_{artifact_suffix}.json"
     results_path = Path(results_filename)
     with open(results_path, "w") as f:
         json.dump(_json_safe(results), f, indent=2)
 
     result_artifact = wandb.Artifact(
         analysis_artifact_name,
-        type="analysis",
+        type="min_grad_analysis",
         metadata={
             "source_artifact": f"{run_name}:{artifact_alias}",
             "resolved_source_artifact": resolved_artifact_name,
