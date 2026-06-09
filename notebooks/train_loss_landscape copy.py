@@ -348,7 +348,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     model.zero_grad(set_to_none=True)
 
     inputs, targets = get_hessian_batch_tensor(loader, device, num_batches=num_batches)
-    subset = torch.utils.data.TensorDataset(inputs, targets)
+    subset = torch.utils.data.TensorDataset(inputs.to(device), targets.to(device))
     subset_loader = torch.utils.data.DataLoader(subset, batch_size=128)
 
     hessian_comp = hessian(
@@ -356,7 +356,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
         criterion,
         #data=(inputs, targets),
         dataloader=subset_loader,
-        cuda=(device == "cuda"),
+        cuda=True#(device == "cuda"),
     )
 
     params = [p for p in model.parameters() if p.requires_grad]
