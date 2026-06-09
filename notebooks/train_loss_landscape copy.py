@@ -347,18 +347,20 @@ def compute_top_and_bottom_hessian_eigenpairs(
 
     model.zero_grad(set_to_none=True)
 
-    class HessianDataWrapper:
+    class HessianDataWrapper(tuple):
+        def __new__(cls, inputs, targets):
+            # On initialise le tuple de base avec exactement 2 éléments (inputs, targets)
+            # Cela valide instantanément : self.inputs, self.targets = self.data
+            return super(HessianDataWrapper, cls).__new__(cls, (inputs, targets))
+
         def __init__(self, inputs, targets):
             self.inputs = inputs
             self.targets = targets
 
-        # Permet le déballage dans __init__ : inputs, targets = data
         def __iter__(self):
+            # Lorsqu'on boucle dessus : for inputs, targets in self.data
+            # On renvoie un itérateur contenant le tuple (inputs, targets)
             return iter([(self.inputs, self.targets)])
-
-        # Permet l'accès par index si le __init__ utilise une indexation de tuple
-        def __getitem__(self, idx):
-            return [self.inputs, self.targets][idx]
 
     # Encapsulation de vos tenseurs uniques
     wrapped_data = HessianDataWrapper(inputs, targets)
