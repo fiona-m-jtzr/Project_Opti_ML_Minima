@@ -350,7 +350,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     hessian_comp = hessian(
         model,
         criterion,
-        data=(inputs, targets),
+        data=[(inputs, targets)],
         cuda=(device == "cuda"),
     )
 
@@ -446,6 +446,9 @@ def compute_top_and_bottom_hessian_eigenpairs(
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
     model, train_dataloader, criterion, device, num_batches=8
 )
+
+print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
+print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalue']:.4f}")
 
 raw_dir_x = hessian_results['top_eigenvector']
 raw_dir_y = hessian_results['bottom_eigenvector']
