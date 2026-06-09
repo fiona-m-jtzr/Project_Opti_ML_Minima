@@ -347,11 +347,15 @@ def compute_top_and_bottom_hessian_eigenpairs(
 
     model.zero_grad(set_to_none=True)
 
+    inputs, targets = get_hessian_batch_tensor(loader, device, num_batches=num_batches)
+    subset = torch.utils.data.TensorDataset(inputs, targets)
+    subset_loader = torch.utils.data.DataLoader(subset, batch_size=128)
+
     hessian_comp = hessian(
         model,
         criterion,
-        #data=(inputs, targets),
-        dataloader=train_dataloader,
+        data=subset_loader,
+        #dataloader=train_dataloader,
         cuda=(device == "cuda"),
     )
 
