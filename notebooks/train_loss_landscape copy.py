@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import wandb
 from hessian.hessian import hessian
 from itertools import islice
+import plotly.graph_objects as go
 
 """
 Vision Transformer (ViT) for CIFAR-10.
@@ -296,7 +297,7 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # dir_y = create_random_direction(model)
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
-def get_hessian_batch_tensor(loader, device, num_batches=16):
+def get_hessian_batch_tensor(loader, device, num_batches=32):
     xs, ys = [], []
     for x, y in islice(loader, num_batches):
         xs.append(x)
@@ -310,7 +311,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     loader,
     criterion,
     device,
-    num_batches=16,
+    num_batches=32,
     tol=1e-3,
     maxiter=100,
     ncv=None,
@@ -449,7 +450,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
-    model, train_dataloader, criterion, device, num_batches=16
+    model, train_dataloader, criterion, device, num_batches=32
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
@@ -493,7 +494,7 @@ dir_y = normalize_direction_filter_wise(raw_dir_y, model.parameters())
 #             total_samples += inputs.size(0)
 #     return total_loss / total_samples
 
-def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=16):
+def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
     """Calcule la loss moyenne sur un sous-ensemble de batchs pour accélérer le runtime."""
     total_loss = 0.0
     total_samples = 0
@@ -515,8 +516,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=16):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.5, 0.5, grid_resolution)
-steps_y = np.linspace(-0.5, 0.5, grid_resolution)
+steps_x = np.linspace(-0.3, 0.3, grid_resolution)
+steps_y = np.linspace(-0.3, 0.3, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
@@ -588,4 +589,26 @@ ax2.view_init(elev=30, azim=45)
 
 plt.tight_layout()
 plt.savefig(f"loss_landscape_vit/{model_name}_best.png", dpi=300, bbox_inches='tight') # bbox_inches évite que les axes soient coupés
-plt.show()
+
+# 1. Charger les matrices calculées sur le cluster
+X = np.load("hessian_X.npy")
+Y = np.load("hessian_Y.npy")
+Z = np.load("hessian_Z.npy")
+
+# 2. Créer la surface 3D interactive
+fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z, colorscale='Plasma')])
+
+# 3. Personnaliser le design
+fig.update_layout(
+    title='Loss Landscape Interactif (Hessian Axes)',
+    scene = dict(
+        xaxis_title='Axe X (Max Courbure)',
+        yaxis_title='Axe Y (Min Courbure)',
+        zaxis_title='Loss'
+    ),
+    autosize=False,
+    width=800, height=800,
+)
+
+# 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
+fig.write_html("loss_landscape_interactif.html")
