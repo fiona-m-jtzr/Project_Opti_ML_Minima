@@ -247,9 +247,6 @@ test_data = torchvision.datasets.CIFAR10(
     transform=transform
 )
 
-# train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=128, shuffle=False)
-# test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=128, shuffle=False)
-
 val_fraction = 0.1
 val_size   = int(len(training_data) * val_fraction)
 train_size = len(training_data) - val_size
@@ -257,6 +254,9 @@ train_set, val_set = random_split(
     training_data, [train_size, val_size],
     generator=torch.Generator().manual_seed(42),
 )
+
+train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=128, shuffle=False)
+test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=128, shuffle=False)
 
 criterion = nn.CrossEntropyLoss()
 
@@ -460,7 +460,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
-    model, train_set, criterion, device, num_batches=32
+    model, train_dataloader, criterion, device, num_batches=32
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
@@ -540,7 +540,7 @@ for i, x_coeff in enumerate(steps_x):
             p.data = w_start + x_coeff * dx + y_coeff * dy
 
         # Calculer la loss à cette coordonnée
-        loss_val = evaluate_loss_subsampled(model, train_set, criterion, device)
+        loss_val = evaluate_loss_subsampled(model, train_dataloader, criterion, device)
         # Z[j, i] = np.log10(loss_val) # Attention à l'indexation (y=lignes, x=colonnes)
         Z[j, i] = loss_val # Attention à l'indexation (y=lignes, x=colonnes)
 
