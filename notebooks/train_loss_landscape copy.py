@@ -354,8 +354,8 @@ def compute_top_and_bottom_hessian_eigenpairs(
     hessian_comp = hessian(
         model,
         criterion,
-        data=subset_loader,
-        #dataloader=train_dataloader,
+        #data=(inputs, targets),
+        dataloader=subset_loader,
         cuda=(device == "cuda"),
     )
 
