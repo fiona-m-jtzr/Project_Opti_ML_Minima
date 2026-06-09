@@ -833,7 +833,7 @@ def analyze(
     artifact_alias = str(artifact_alias)
     artifact_suffix = _safe_artifact_suffix(artifact_alias)
     if analysis_artifact_name is None:
-        analysis_artifact_name = f"{run_name}-minimum-analysis"
+        analysis_artifact_name = f"{run_name}-min-grad-analysis"
         if artifact_suffix != "latest":
             analysis_artifact_name = f"{analysis_artifact_name}-{artifact_suffix}"
 
@@ -852,7 +852,7 @@ def analyze(
     wandb_run = wandb.init(
         project="OptiML_Minima",
         name=analysis_run_name,
-        job_type="minimum-analysis",
+        job_type="min-grad-analysis",
         config={
             "source_run_name": run_name,
             "source_artifact_alias": artifact_alias,
@@ -1012,8 +1012,8 @@ def parse_args():
         default=None,
         help=(
             "Optional W&B analysis artifact name. Defaults to "
-            "<run_name>-minimum-analysis for latest and "
-            "<run_name>-minimum-analysis-<artifact_alias> for explicit versions."
+            "<run_name>-min-grad-analysis for latest and "
+            "<run_name>-min-grad-analysis-<artifact_alias> for explicit versions."
         ),
     )
     parser.add_argument("--batch_size", type=int, default=128)
