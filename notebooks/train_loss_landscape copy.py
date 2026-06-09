@@ -296,7 +296,7 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # dir_y = create_random_direction(model)
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
-def get_hessian_batch_tensor(loader, device, num_batches=8):
+def get_hessian_batch_tensor(loader, device, num_batches=16):
     xs, ys = [], []
     for x, y in islice(loader, num_batches):
         xs.append(x)
@@ -310,7 +310,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     loader,
     criterion,
     device,
-    num_batches=8,
+    num_batches=16,
     tol=1e-3,
     maxiter=100,
     ncv=None,
@@ -449,8 +449,11 @@ def compute_top_and_bottom_hessian_eigenpairs(
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
-    model, train_dataloader, criterion, device, num_batches=8
+    model, train_dataloader, criterion, device, num_batches=16
 )
+
+print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
+print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalue']:.4f}")
 
 raw_dir_x = hessian_results['top_eigenvector']
 raw_dir_y = hessian_results['bottom_eigenvector']
@@ -490,7 +493,7 @@ dir_y = normalize_direction_filter_wise(raw_dir_y, model.parameters())
 #             total_samples += inputs.size(0)
 #     return total_loss / total_samples
 
-def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=8):
+def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=16):
     """Calcule la loss moyenne sur un sous-ensemble de batchs pour accélérer le runtime."""
     total_loss = 0.0
     total_samples = 0
@@ -528,7 +531,7 @@ for i, x_coeff in enumerate(steps_x):
         # Calculer la loss à cette coordonnée
         loss_val = evaluate_loss_subsampled(model, train_dataloader, criterion, device)
         # Z[j, i] = np.log10(loss_val) # Attention à l'indexation (y=lignes, x=colonnes)
-        Z[j, i] = np.log10(loss_val) # Attention à l'indexation (y=lignes, x=colonnes)
+        Z[j, i] = loss_val # Attention à l'indexation (y=lignes, x=colonnes)
 
     print(f"Ligne {i+1}/{grid_resolution} terminée.")
 
