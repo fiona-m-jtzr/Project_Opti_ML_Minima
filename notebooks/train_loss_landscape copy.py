@@ -347,12 +347,36 @@ def compute_top_and_bottom_hessian_eigenpairs(
 
     model.zero_grad(set_to_none=True)
 
+    class HessianDataWrapper:
+        def __init__(self, inputs, targets):
+            self.inputs = inputs
+            self.targets = targets
+
+        # Permet le déballage dans __init__ : inputs, targets = data
+        def __iter__(self):
+            return iter([(self.inputs, self.targets)])
+
+        # Permet l'accès par index si le __init__ utilise une indexation de tuple
+        def __getitem__(self, idx):
+            return [self.inputs, self.targets][idx]
+
+    # Encapsulation de vos tenseurs uniques
+    wrapped_data = HessianDataWrapper(inputs, targets)
+
+    # Initialisation de la Hessienne avec l'objet adapté
     hessian_comp = hessian(
         model,
         criterion,
-        data=[(inputs, targets)],
+        data=wrapped_data,
         cuda=(device == "cuda"),
     )
+
+    # hessian_comp = hessian(
+    #     model,
+    #     criterion,
+    #     data=[(inputs, targets)],
+    #     cuda=(device == "cuda"),
+    # )
 
     params = [p for p in model.parameters() if p.requires_grad]
     shapes = [p.shape for p in params]
