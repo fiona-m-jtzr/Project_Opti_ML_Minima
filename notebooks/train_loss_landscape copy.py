@@ -18,6 +18,7 @@ import wandb
 from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
+import os
 
 """
 Vision Transformer (ViT) for CIFAR-10.
@@ -591,9 +592,11 @@ plt.tight_layout()
 plt.savefig(f"loss_landscape_vit/{model_name}_best.png", dpi=300, bbox_inches='tight') # bbox_inches évite que les axes soient coupés
 
 # 1. Charger les matrices calculées sur le cluster
-X = np.load("hessian_X.npy")
-Y = np.load("hessian_Y.npy")
-Z = np.load("hessian_Z.npy")
+data_dir = './results'
+
+X = np.load(os.path.join(data_dir, "hessian_X.npy"))
+Y = np.load(os.path.join(data_dir, "hessian_Y.npy"))
+Z = np.load(os.path.join(data_dir, "hessian_Z.npy"))
 
 # 2. Créer la surface 3D interactive
 fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z, colorscale='Plasma')])
