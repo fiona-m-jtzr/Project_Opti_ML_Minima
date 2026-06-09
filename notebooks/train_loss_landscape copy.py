@@ -347,38 +347,13 @@ def compute_top_and_bottom_hessian_eigenpairs(
 
     model.zero_grad(set_to_none=True)
 
-    class HessianDataWrapper(tuple):
-        def __new__(cls, inputs, targets):
-            # On initialise le tuple de base avec exactement 2 éléments (inputs, targets)
-            # Cela valide instantanément : self.inputs, self.targets = self.data
-            return super(HessianDataWrapper, cls).__new__(cls, (inputs, targets))
-
-        def __init__(self, inputs, targets):
-            self.inputs = inputs
-            self.targets = targets
-
-        def __iter__(self):
-            # Lorsqu'on boucle dessus : for inputs, targets in self.data
-            # On renvoie un itérateur contenant le tuple (inputs, targets)
-            return iter([(self.inputs, self.targets)])
-
-    # Encapsulation de vos tenseurs uniques
-    wrapped_data = HessianDataWrapper(inputs, targets)
-
-    # Initialisation de la Hessienne avec l'objet adapté
     hessian_comp = hessian(
         model,
         criterion,
-        data=wrapped_data,
+        #data=(inputs, targets),
+        dataloader=train_dataloader,
         cuda=(device == "cuda"),
     )
-
-    # hessian_comp = hessian(
-    #     model,
-    #     criterion,
-    #     data=[(inputs, targets)],
-    #     cuda=(device == "cuda"),
-    # )
 
     params = [p for p in model.parameters() if p.requires_grad]
     shapes = [p.shape for p in params]
@@ -472,9 +447,6 @@ def compute_top_and_bottom_hessian_eigenpairs(
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
     model, train_dataloader, criterion, device, num_batches=8
 )
-
-print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
-print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalue']:.4f}")
 
 raw_dir_x = hessian_results['top_eigenvector']
 raw_dir_y = hessian_results['bottom_eigenvector']
