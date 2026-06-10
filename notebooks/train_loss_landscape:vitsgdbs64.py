@@ -265,7 +265,7 @@ criterion = nn.CrossEntropyLoss()
 # ==========================================
 # Assurez-vous que la classe ResNet20 et BasicBlock sont définies plus haut dans votre script
 api = wandb.Api()
-model_name = 'model-FINAL_MODEL_vit_muon_muonLR0.02_adamLR0.0005_wd0.0_bs512_cosine_warmup_seed1'
+model_name = 'model-FINAL_MODEL_vit_sgd_mom0.9_nesterov_lr0.1_wd0.0_bs64_cosine_warmup_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
 ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))[1]
@@ -518,8 +518,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.4, 0.4, grid_resolution)
-steps_y = np.linspace(-0.4, 0.4, grid_resolution)
+steps_x = np.linspace(-0.5, 0.5, grid_resolution)
+steps_y = np.linspace(-0.5, 0.5, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
