@@ -457,6 +457,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
         "top_eigenvector": [v.detach().clone() for v in top_eigenvector],
         "bottom_eigenvalue": bottom_eigenvalue,
         "bottom_eigenvector": [v.detach().clone() for v in bottom_eigenvector],
+        "hessian_comp": hessian_comp,
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
@@ -468,6 +469,14 @@ print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalu
 
 raw_dir_x = hessian_results['top_eigenvector']
 raw_dir_y = hessian_results['bottom_eigenvector']
+hessian_comp = hessian_results['hessian_comp']
+
+# Vérifie que dir_x est bien un eigenvector : H @ dir_x ≈ lambda * dir_x
+hv_result = hessian_comp.dataloader_hv_product(raw_dir_x)
+_, hv = hv_result
+hv_norm = sum(v.norm().item() for v in hv)
+dx_norm = sum(v.norm().item() for v in raw_dir_x)
+print(f"Ratio ||Hv||/||v|| = {hv_norm/dx_norm:.4f}  (doit ≈ {hessian_results['top_eigenvalue']:.4f})")
 
 def normalize_direction_filter_wise(direction_vectors, model_parameters):
     """Applique la normalisation par filtre sur les vecteurs propres pour préserver l'échelle."""
@@ -484,9 +493,9 @@ def normalize_direction_filter_wise(direction_vectors, model_parameters):
         normalized_direction.append(d_clone)
     return normalized_direction
 
-print("Normalisation filter-wise des vecteurs propres...")
-dir_x = normalize_direction_filter_wise(raw_dir_x, model.parameters())
-dir_y = normalize_direction_filter_wise(raw_dir_y, model.parameters())
+#print("Normalisation filter-wise des vecteurs propres...")
+dir_x = raw_dir_x#normalize_direction_filter_wise(raw_dir_x, model.parameters())
+dir_y = raw_dir_y#normalize_direction_filter_wise(raw_dir_y, model.parameters())
 
 # ==========================================
 # 4. FONCTION D'ÉVALUATION DE LA LOSS
