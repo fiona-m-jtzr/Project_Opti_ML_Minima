@@ -268,7 +268,7 @@ api = wandb.Api()
 model_name = 'model-FINAL_MODEL_vit_muon_muonLR0.02_adamLR0.0005_wd0.0_bs512_cosine_warmup_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
-ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))[0]
+ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))[1]
 print('path: ',ckpt_path)
 model = ViTCIFAR10().to(device)
 checkpoint = torch.load(ckpt_path, map_location=device)
@@ -287,24 +287,6 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # ==========================================
 # 3. CRÉATION DES DIRECTIONS ALÉATOIRES (Filter-wise)
 # ==========================================
-# def create_random_direction(model):
-#     """Crée une direction aléatoire avec la même structure que les paramètres du modèle."""
-#     direction = []
-#     for p in model.parameters():
-#         d = torch.randn_like(p)
-#         # Normalisation par filtre (indispensable pour les ResNets)
-#         if len(p.shape) >= 2: # Conv or Linear layers
-#             for i in range(p.shape[0]):
-#                 d_filter = d[i]
-#                 p_filter = p[i]
-#                 d_filter.mul_(p_filter.norm() / (d_filter.norm() + 1e-10))
-#         else: # Bias, BatchNorm
-#             d.mul_(p.norm() / (d.norm() + 1e-10))
-#         direction.append(d)
-#     return direction
-
-# dir_x = create_random_direction(model)
-# dir_y = create_random_direction(model)
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
 def get_hessian_batch_tensor(loader, device, num_batches=32):
@@ -437,35 +419,18 @@ def compute_top_and_bottom_hessian_eigenpairs(
 
     top_vals, top_vecs = hessian_comp.eigenvalues(top_n=5)
 
-    # Smallest algebraic eigenvalue, not smallest magnitude.
-    # This is the most negative eigenvalue if the Hessian has negative curvature.
-    # bottom_vals, bottom_vecs = eigsh(
-    #     H,
-    #     k=1,
-    #     which="SA",
-    #     tol=tol,
-    #     maxiter=maxiter,
-    #     ncv=ncv,
-    # )
+    idx_max = np.argmax(top_vals)
+    idx_min = np.argmin(top_vals)
+    max_eigenvalue = top_vals[idx_max]
+    min_eigenvalue = top_vals[idx_min]
+    max_eigenvector = top_vecs[idx_max]
+    min_eigenvector = top_vecs[idx_min]
 
-    # top_eigenvalue = float(top_vals[0])
-    # bottom_eigenvalue = float(bottom_vals[0])
-
-    # top_eigenvector = _numpy_to_tensor_list(top_vecs[:, 0])
-    # bottom_eigenvector = _numpy_to_tensor_list(bottom_vecs[:, 0])
-
-    # return {
-    #     "top_eigenvalue": top_eigenvalue,
-    #     "top_eigenvector": [v.detach().clone() for v in top_eigenvector],
-    #     "bottom_eigenvalue": bottom_eigenvalue,
-    #     "bottom_eigenvector": [v.detach().clone() for v in bottom_eigenvector],
-    #     "hessian_comp": hessian_comp,
-    # }
     return {
-        "top_eigenvalue":   top_vals[-1],
-        "top_eigenvector":  top_vecs[-1],   # liste de tenseurs
-        "top5_eigenvalue":  top_vals[0],
-        "top5_eigenvector": top_vecs[0],    # liste de tenseurs
+        "top_eigenvalue":   max_eigenvalue,
+        "top_eigenvector":  max_eigenvector,   # liste de tenseurs
+        "top5_eigenvalue":  min_eigenvalue,
+        "top5_eigenvector": min_eigenvector,    # liste de tenseurs
         "all_eigenvalues":  top_vals,
         "hessian_comp":     hessian_comp,
     }
