@@ -674,6 +674,7 @@ def compute_hessian_metrics(
     )
 
     eigenvalues, _ = hessian_comp.eigenvalues(top_n=top_n)
+    print(f"Top {top_n} raw Hessian eigenvalues: {eigenvalues}")
     model.zero_grad(set_to_none=True)
 
     trace_estimates = hessian_comp.trace(maxIter=trace_samples)
