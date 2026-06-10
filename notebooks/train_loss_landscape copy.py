@@ -462,13 +462,13 @@ def compute_top_and_bottom_hessian_eigenpairs(
     #     "hessian_comp": hessian_comp,
     # }
     return {
-    "top_eigenvalue":    float(top_vals[-1]),
-    "top_eigenvector":   _numpy_to_tensor_list(top_vecs[:, -1]),
-    "top5_eigenvalue":   float(top_vals[0]),
-    "top5_eigenvector":  _numpy_to_tensor_list(top_vecs[:, 0]),
-    "all_eigenvalues":   top_vals.tolist(),   # utile pour vérifier
-    "hessian_comp":      hessian_comp,
-}
+        "top_eigenvalue":   top_vals[-1],
+        "top_eigenvector":  top_vecs[-1],   # liste de tenseurs
+        "top5_eigenvalue":  top_vals[0],
+        "top5_eigenvector": top_vecs[0],    # liste de tenseurs
+        "all_eigenvalues":  top_vals,
+        "hessian_comp":     hessian_comp,
+    }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
     model, train_dataloader, criterion, device, num_batches=32
