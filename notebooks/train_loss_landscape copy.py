@@ -268,10 +268,10 @@ api = wandb.Api()
 model_name = 'model-FINAL_MODEL_vit_muon_muonLR0.02_adamLR0.0005_wd0.0_bs512_cosine_warmup_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
-ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))#[0]
+ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))[0]
 print('path: ',ckpt_path)
 model = ViTCIFAR10().to(device)
-checkpoint = torch.load(ckpt_path[1], map_location=device)
+checkpoint = torch.load(ckpt_path, map_location=device)
 
 # Ajustement si les clés du state_dict contiennent 'module.' (DataParallel)
 state_dict = checkpoint["model"]
@@ -543,8 +543,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.2, 0.2, grid_resolution)
-steps_y = np.linspace(-0.2, 0.2, grid_resolution)
+steps_x = np.linspace(-0.4, 0.4, grid_resolution)
+steps_y = np.linspace(-0.4, 0.4, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
