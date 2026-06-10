@@ -475,10 +475,10 @@ hessian_results = compute_top_and_bottom_hessian_eigenpairs(
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
-print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalue']:.4f}")
+print(f"-> 5th Eigenvalue (Min courbure) : {hessian_results['top5_eigenvector']:.4f}")
 
 raw_dir_x = hessian_results['top_eigenvector']
-raw_dir_y = hessian_results['bottom_eigenvector']
+raw_dir_y = hessian_results['top5_eigenvector']
 hessian_comp = hessian_results['hessian_comp']
 
 # Vérifie que dir_x est bien un eigenvector : H @ dir_x ≈ lambda * dir_x
