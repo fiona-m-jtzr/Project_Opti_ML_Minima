@@ -483,18 +483,18 @@ hessian_comp = hessian_results['hessian_comp']
 
 # Vérifie que dir_x est bien un eigenvector : H @ dir_x ≈ lambda * dir_x
 # Top eigenvector
-hv_result = hessian_comp.dataloader_hv_product(raw_dir_x)
-_, hv = hv_result
-hv_norm = sum(v.norm().item() for v in hv)
-dx_norm = sum(v.norm().item() for v in raw_dir_x)
-print(f"Top   — Ratio ||Hv||/||v|| = {hv_norm/dx_norm:.4f}  (doit ≈ {hessian_results['top_eigenvalue']:.4f})")
+# hv_result = hessian_comp.dataloader_hv_product(raw_dir_x)
+# _, hv = hv_result
+# hv_norm = sum(v.norm().item() for v in hv)
+# dx_norm = sum(v.norm().item() for v in raw_dir_x)
+# print(f"Top   — Ratio ||Hv||/||v|| = {hv_norm/dx_norm:.4f}  (doit ≈ {hessian_results['top_eigenvalue']:.4f})")
 
-# Bottom eigenvector
-hv_result = hessian_comp.dataloader_hv_product(raw_dir_y)
-_, hv = hv_result
-hv_norm = sum(v.norm().item() for v in hv)
-dy_norm = sum(v.norm().item() for v in raw_dir_y)
-print(f"Bottom — Ratio ||Hv||/||v|| = {hv_norm/dy_norm:.4f}  (doit ≈ {hessian_results['bottom_eigenvalue']:.4f})")
+# # Bottom eigenvector
+# hv_result = hessian_comp.dataloader_hv_product(raw_dir_y)
+# _, hv = hv_result
+# hv_norm = sum(v.norm().item() for v in hv)
+# dy_norm = sum(v.norm().item() for v in raw_dir_y)
+# print(f"Bottom — Ratio ||Hv||/||v|| = {hv_norm/dy_norm:.4f}  (doit ≈ {hessian_results['bottom_eigenvalue']:.4f})")
 
 def normalize_direction_filter_wise(direction_vectors, model_parameters):
     """Applique la normalisation par filtre sur les vecteurs propres pour préserver l'échelle."""
