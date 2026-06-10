@@ -18,6 +18,7 @@ import wandb
 from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
+from torch.utils.data import DataLoader, random_split
 import os
 
 """
@@ -246,7 +247,15 @@ test_data = torchvision.datasets.CIFAR10(
     transform=transform
 )
 
-train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=128, shuffle=False)
+val_fraction = 0.1
+val_size   = int(len(training_data) * val_fraction)
+train_size = len(training_data) - val_size
+train_set, val_set = random_split(
+    training_data, [train_size, val_size],
+    generator=torch.Generator().manual_seed(42),
+)
+
+train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=128, shuffle=False)
 test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=128, shuffle=False)
 
 criterion = nn.CrossEntropyLoss()
@@ -517,8 +526,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.3, 0.3, grid_resolution)
-steps_y = np.linspace(-0.3, 0.3, grid_resolution)
+steps_x = np.linspace(-0.01, 0.01, grid_resolution)
+steps_y = np.linspace(-0.01, 0.01, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
