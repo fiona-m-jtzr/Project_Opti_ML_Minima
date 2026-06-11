@@ -616,4 +616,4 @@ fig.update_layout(
 )
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
-fig.write_html("loss_landscape_interactif.html")
+fig.write_html(f"{model_name}.html")
