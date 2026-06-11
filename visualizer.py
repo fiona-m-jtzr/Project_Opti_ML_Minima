@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate W&B minimum-analysis artifacts and plot summary diagnostics.
+"""Aggregate W&B min_grad_analysis artifacts and plot summary diagnostics.
 
 This variant plots both RAW and NORMALIZED Hessian metrics plus both
 scale-invariant and element-wise adaptive sharpness curves produced by the
@@ -144,17 +144,13 @@ def hessian_metric_value(result: dict[str, Any], metric: str) -> Any:
 
         eigenvalues = hessian_metrics.get("raw_top_eigenvalues")
         if isinstance(eigenvalues, list) and eigenvalues:
-            return finite_real(eigenvalues[0])
+            return finite_real(max(eigenvalues, key=lambda x: x.real))
         return None
 
     if metric == "raw_top_eigenvalue":
         return raw_top_eigenvalue()
 
     if metric == "normalized_top_eigenvalue":
-        explicit_value = finite_real(hessian_metrics.get("normalized_top_eigenvalue"))
-        if explicit_value is not None:
-            return explicit_value
-
         raw_value = raw_top_eigenvalue()
         weight_norm = finite_real(hessian_metrics.get("weight_norm"))
         if raw_value is not None and weight_norm is not None:
@@ -239,12 +235,12 @@ def collect_analysis_results(
 
     for run in runs:
         for artifact in run.logged_artifacts():
-            if artifact.type != "analysis":
+            if artifact.type != "min_grad_analysis":
                 continue
 
             # Example collection names:
-            # model-resnet20-sgd_lr0.1_seed42-minimum-analysis:v3 -> model-resnet20-sgd_lr0.1_seed42-minimum-analysis
-            # model-vit-adamw_lr0.001_seed42-minimum-analysis:v2 -> model-vit-adamw_lr0.001_seed42-minimum-analysis
+            # model-resnet20-sgd_lr0.1_seed42-min_grad_analysis:v3 -> model-resnet20-sgd_lr0.1_seed42-min_grad_analysis
+            # model-vit-adamw_lr0.001_seed42-min_grad_analysis:v2 -> model-vit-adamw_lr0.001_seed42-min_grad_analysis
             collection = artifact.name.split(":")[0]
 
             if not artifact_matches_model_family(collection, model_family):
@@ -288,8 +284,8 @@ def parse_run_name(name: str) -> dict[str, Any]:
     """Parse model/optimizer/config metadata from artifact or run names."""
     name = (
         name
-        .replace("-minimum-analysis", "")
-        .replace("_minimum_analysis", "")
+        .replace("-min_grad_analysis", "")
+        .replace("_min_grad_analysis", "")
     )
     name_lower = name.lower()
 
@@ -576,6 +572,8 @@ def average_results(
     *,
     scope: str,
     group_by: str,
+    sgd_batch_size: int | None = None,
+    sgd_learning_rate: float | None = None,
 ) -> list[dict[str, Any]]:
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
 
@@ -583,6 +581,19 @@ def average_results(
         meta = parse_run_name(result_name(result))
         if scope == "sgd" and meta["optimizer"] != "sgd":
             continue
+
+        # When grouping by optimizer, the SGD bar would normally average every
+        # available SGD batch-size / learning-rate configuration. These CLI
+        # filters let you compare one chosen SGD configuration against the
+        # other optimizer groups. They intentionally affect only SGD runs.
+        if group_by == "optimizer" and meta["optimizer"] == "sgd":
+            if sgd_batch_size is not None and meta["bs"] != sgd_batch_size:
+                continue
+            if (
+                sgd_learning_rate is not None
+                and (meta["lr"] is None or not math.isclose(meta["lr"], sgd_learning_rate, rel_tol=1e-12, abs_tol=0.0))
+            ):
+                continue
 
         key, label, color_label = group_identity(result, scope, group_by)
         if key not in grouped:
@@ -886,6 +897,8 @@ def plot_results(
     sort_bars: str,
     show: bool,
     model_family: str,
+    sgd_batch_size: int | None = None,
+    sgd_learning_rate: float | None = None,
 ) -> None:
     if not results:
         raise RuntimeError("No analysis results found after filtering/grouping.")
@@ -925,8 +938,15 @@ def plot_results(
     for ax in axes[n_panels:]:
         ax.set_axis_off()
 
+    sgd_filter_label = ""
+    if group_by == "optimizer" and (sgd_batch_size is not None or sgd_learning_rate is not None):
+        sgd_filter_label = (
+            f" | SGD filter: bs={format_value(sgd_batch_size)}, "
+            f"lr={format_value(sgd_learning_rate)}"
+        )
+
     fig.suptitle(
-        f"Minimum analysis summary | model={model_family} | scope={scope} | grouped by={group_by} | bars={sort_bars} | raw + normalized Hessian + sharpness metrics",
+        f"Minimum analysis summary | model={model_family} | scope={scope} | grouped by={group_by}{sgd_filter_label} | bars={sort_bars} | raw + normalized Hessian + sharpness metrics",
         fontsize=16,
     )
     add_color_legend(fig, color_map, color_legend_title(scope, group_by))
@@ -947,9 +967,9 @@ def plot_results(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Load W&B minimum-analysis artifacts, average them, and plot summary metrics with raw/normalized Hessian and sharpness values."
+        description="Load W&B min_grad_analysis artifacts, average them, and plot summary metrics with raw/normalized Hessian and sharpness values."
     )
-    parser.add_argument("--output", default="minimum_analysis_summary_with_adaptive_sharpness.png")
+    parser.add_argument("--output", default="min_grad_analysis_summary_with_adaptive_sharpness.png")
     parser.add_argument("--project", default=PROJECT)
     parser.add_argument(
         "--model-family",
@@ -976,6 +996,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sgd-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "When --group-by optimizer is used, include only SGD runs with this batch size. "
+            "Use together with --sgd-learning-rate to select one SGD configuration."
+        ),
+    )
+    parser.add_argument(
+        "--sgd-learning-rate",
+        type=float,
+        default=None,
+        help=(
+            "When --group-by optimizer is used, include only SGD runs with this learning rate. "
+            "Use together with --sgd-batch-size to select one SGD configuration."
+        ),
+    )
+    parser.add_argument(
         "--sort-bars",
         choices=("ascending", "descending"),
         default="ascending",
@@ -993,8 +1031,26 @@ def main() -> None:
     args = parse_args()
     group_by = resolve_group_by(args.scope, args.group_by)
 
+    if (args.sgd_batch_size is None) != (args.sgd_learning_rate is None):
+        raise ValueError(
+            "Use --sgd-batch-size and --sgd-learning-rate together, "
+            "or omit both to average all SGD configurations."
+        )
+
+    if group_by != "optimizer" and (args.sgd_batch_size is not None or args.sgd_learning_rate is not None):
+        raise ValueError(
+            "--sgd-batch-size/--sgd-learning-rate are only supported when grouping by optimizer "
+            "because other grouping modes already separate batch size and/or learning rate."
+        )
+
     results = collect_analysis_results(project=args.project, model_family=args.model_family)
-    averaged = average_results(results, scope=args.scope, group_by=group_by)
+    averaged = average_results(
+        results,
+        scope=args.scope,
+        group_by=group_by,
+        sgd_batch_size=args.sgd_batch_size,
+        sgd_learning_rate=args.sgd_learning_rate,
+    )
 
     plot_results(
         averaged,
@@ -1004,6 +1060,8 @@ def main() -> None:
         sort_bars=args.sort_bars,
         show=not args.no_show,
         model_family=args.model_family,
+        sgd_batch_size=args.sgd_batch_size,
+        sgd_learning_rate=args.sgd_learning_rate,
     )
 
 
