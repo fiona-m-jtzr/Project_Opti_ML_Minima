@@ -290,7 +290,7 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # ==========================================
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
-def get_hessian_batch_tensor(loader, device, num_batches=8):
+def get_hessian_batch_tensor(loader, device, num_batches=32):
     xs, ys = [], []
     for x, y in islice(loader, num_batches):
         xs.append(x)
@@ -304,7 +304,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     loader,
     criterion,
     device,
-    num_batches=8,
+    num_batches=32,
     tol=1e-3,
     maxiter=100,
     ncv=None,
@@ -437,7 +437,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
-    model, train_dataloader, criterion, device, num_batches=8
+    model, train_dataloader, criterion, device, num_batches=32
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
@@ -497,7 +497,7 @@ dir_y = raw_dir_y#normalize_direction_filter_wise(raw_dir_y, model.parameters())
 #             total_samples += inputs.size(0)
 #     return total_loss / total_samples
 
-def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=8):
+def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
     """Calcule la loss moyenne sur un sous-ensemble de batchs pour accélérer le runtime."""
     total_loss = 0.0
     total_samples = 0
@@ -600,23 +600,27 @@ plt.savefig(f"loss_landscape_vit/{model_name}_zoomed.png", dpi=300, bbox_inches=
 # Y = np.load(os.path.join(data_dir, "hessian_Y.npy"))
 # Z = np.load(os.path.join(data_dir, "hessian_Z.npy"))
 
-# 2. Créer la surface 3D interactive
-fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z, colorscale='Plasma')])
+ci = grid_resolution // 2
 
-# 3. Personnaliser le design
+fig = go.Figure(data=[
+    go.Surface(x=X, y=Y, z=Z, colorscale='Plasma'),
+    go.Scatter3d(
+        x=[0], y=[0], z=[Z[ci, ci]],
+        mode='markers',
+        marker=dict(size=8, color='red'),
+    )
+])
+
 fig.update_layout(
-    scene = dict(
+    scene=dict(
         xaxis_title='1st eigenvector',
         yaxis_title='5th eigenvector',
-        zaxis_title='Loss'
+        zaxis_title='Loss',
     ),
     autosize=False,
     width=800, height=800,
 )
-# Index du centre
-ci = grid_resolution // 2
-min_loss = Z[ci, ci]
-ax2.scatter(0, 0, min_loss, color='red', marker='.', s=150, zorder=10)
+
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
 fig.write_html(f"{model_name}_zoomed.html")
