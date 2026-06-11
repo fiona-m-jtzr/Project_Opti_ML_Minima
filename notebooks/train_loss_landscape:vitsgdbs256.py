@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
-#from hessian.hessian import hessian
+from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
 from torch.utils.data import DataLoader, random_split
