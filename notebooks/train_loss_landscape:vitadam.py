@@ -268,10 +268,11 @@ api = wandb.Api()
 model_name = 'model-FINAL_MODEL_vit_adam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
-ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))[1]
+ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))
+grad_min = list(filter(lambda k: 'min_grad' in k.name, ckpt_path))[0]
 print('path: ',ckpt_path)
 model = ViTCIFAR10().to(device)
-checkpoint = torch.load(ckpt_path, map_location=device)
+checkpoint = torch.load(grad_min, map_location=device)
 
 # Ajustement si les clés du state_dict contiennent 'module.' (DataParallel)
 state_dict = checkpoint["model"]
