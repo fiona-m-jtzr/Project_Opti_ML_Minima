@@ -290,7 +290,7 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # ==========================================
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
-def get_hessian_batch_tensor(loader, device, num_batches=32):
+def get_hessian_batch_tensor(loader, device, num_batches=8):
     xs, ys = [], []
     for x, y in islice(loader, num_batches):
         xs.append(x)
@@ -304,7 +304,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     loader,
     criterion,
     device,
-    num_batches=32,
+    num_batches=8,
     tol=1e-3,
     maxiter=100,
     ncv=None,
@@ -437,7 +437,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
-    model, train_dataloader, criterion, device, num_batches=32
+    model, train_dataloader, criterion, device, num_batches=8
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
@@ -497,7 +497,7 @@ dir_y = raw_dir_y#normalize_direction_filter_wise(raw_dir_y, model.parameters())
 #             total_samples += inputs.size(0)
 #     return total_loss / total_samples
 
-def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
+def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=8):
     """Calcule la loss moyenne sur un sous-ensemble de batchs pour accélérer le runtime."""
     total_loss = 0.0
     total_samples = 0
@@ -605,15 +605,18 @@ fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z, colorscale='Plasma')])
 
 # 3. Personnaliser le design
 fig.update_layout(
-    title='Loss Landscape Interactif (Hessian Axes)',
     scene = dict(
-        xaxis_title='Axe X (Max Courbure)',
-        yaxis_title='Axe Y (Min Courbure)',
+        xaxis_title='1st eigenvector',
+        yaxis_title='5th eigenvector',
         zaxis_title='Loss'
     ),
     autosize=False,
     width=800, height=800,
 )
+# Index du centre
+ci = grid_resolution // 2
+min_loss = Z[ci, ci]
+ax2.scatter(0, 0, min_loss, color='red', marker='.', s=150, zorder=10)
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
 fig.write_html(f"{model_name}_zoomed.html")
