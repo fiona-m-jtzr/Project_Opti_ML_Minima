@@ -601,19 +601,26 @@ plt.savefig(f"loss_landscape_vit/{model_name}_best.png", dpi=300, bbox_inches='t
 # Z = np.load(os.path.join(data_dir, "hessian_Z.npy"))
 
 # 2. Créer la surface 3D interactive
-fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z, colorscale='Plasma')])
+ci = grid_resolution // 2
 
-# 3. Personnaliser le design
+fig = go.Figure(data=[
+    go.Surface(x=X, y=Y, z=Z, colorscale='Plasma'),
+    go.Scatter3d(
+        x=[0], y=[0], z=[Z[ci, ci]],
+        mode='markers',
+        marker=dict(size=8, color='red'),
+    )
+])
+
 fig.update_layout(
-    title='Loss Landscape Interactif (Hessian Axes)',
-    scene = dict(
-        xaxis_title='Axe X (Max Courbure)',
-        yaxis_title='Axe Y (Min Courbure)',
-        zaxis_title='Loss'
+    scene=dict(
+        xaxis_title='1st eigenvector',
+        yaxis_title='5th eigenvector',
+        zaxis_title='Loss',
     ),
     autosize=False,
     width=800, height=800,
 )
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
-fig.write_html(f"{model_name}.html")
+fig.write_html(f"{model_name}_zoomed.html")
