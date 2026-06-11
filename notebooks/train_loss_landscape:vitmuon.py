@@ -607,7 +607,7 @@ fig = go.Figure(data=[
     go.Scatter3d(
         x=[0], y=[0], z=[Z[ci, ci]],
         mode='markers',
-        marker=dict(size=8, color='red'),
+        marker=dict(size=8, color='white'),
     )
 ])
 
