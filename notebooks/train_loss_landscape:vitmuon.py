@@ -268,10 +268,11 @@ api = wandb.Api()
 model_name = 'model-FINAL_MODEL_vit_muon_muonLR0.02_adamLR0.0005_wd0.0_bs512_cosine_warmup_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
-ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))#[0]
+ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))
+grad_min = list(filter(lambda k: 'min_grad' in k.name, ckpt_path))[0]
 print('path: ',ckpt_path)
 model = ViTCIFAR10().to(device)
-checkpoint = torch.load(ckpt_path[1], map_location=device)
+checkpoint = torch.load(grad_min, map_location=device)
 
 # Ajustement si les clés du state_dict contiennent 'module.' (DataParallel)
 state_dict = checkpoint["model"]
@@ -287,24 +288,6 @@ target_weights = [p.data.clone() for p in model.parameters()]
 # ==========================================
 # 3. CRÉATION DES DIRECTIONS ALÉATOIRES (Filter-wise)
 # ==========================================
-# def create_random_direction(model):
-#     """Crée une direction aléatoire avec la même structure que les paramètres du modèle."""
-#     direction = []
-#     for p in model.parameters():
-#         d = torch.randn_like(p)
-#         # Normalisation par filtre (indispensable pour les ResNets)
-#         if len(p.shape) >= 2: # Conv or Linear layers
-#             for i in range(p.shape[0]):
-#                 d_filter = d[i]
-#                 p_filter = p[i]
-#                 d_filter.mul_(p_filter.norm() / (d_filter.norm() + 1e-10))
-#         else: # Bias, BatchNorm
-#             d.mul_(p.norm() / (d.norm() + 1e-10))
-#         direction.append(d)
-#     return direction
-
-# dir_x = create_random_direction(model)
-# dir_y = create_random_direction(model)
 
 # Load data batches for Hessian computation, used in compute_top_and_bottom_hessian_eigenpairs.
 def get_hessian_batch_tensor(loader, device, num_batches=32):
@@ -426,37 +409,31 @@ def compute_top_and_bottom_hessian_eigenpairs(
     )
 
     # Largest algebraic eigenvalue, not largest by magnitude.
-    top_vals, top_vecs = eigsh(
-        H,
-        k=1,
-        which="LA",
-        tol=tol,
-        maxiter=maxiter,
-        ncv=ncv,
-    )
+    # top_vals, top_vecs = eigsh(
+    #     H,
+    #     k=5,
+    #     which="LA",
+    #     tol=tol,
+    #     maxiter=maxiter,
+    #     ncv=ncv,
+    # )
 
-    # Smallest algebraic eigenvalue, not smallest magnitude.
-    # This is the most negative eigenvalue if the Hessian has negative curvature.
-    bottom_vals, bottom_vecs = eigsh(
-        H,
-        k=1,
-        which="SA",
-        tol=tol,
-        maxiter=maxiter,
-        ncv=ncv,
-    )
+    top_vals, top_vecs = hessian_comp.eigenvalues(top_n=5)
 
-    top_eigenvalue = float(top_vals[0])
-    bottom_eigenvalue = float(bottom_vals[0])
-
-    top_eigenvector = _numpy_to_tensor_list(top_vecs[:, 0])
-    bottom_eigenvector = _numpy_to_tensor_list(bottom_vecs[:, 0])
+    idx_max = np.argmax(top_vals)
+    idx_min = np.argmin(top_vals)
+    max_eigenvalue = top_vals[idx_max]
+    min_eigenvalue = top_vals[idx_min]
+    max_eigenvector = top_vecs[idx_max]
+    min_eigenvector = top_vecs[idx_min]
 
     return {
-        "top_eigenvalue": top_eigenvalue,
-        "top_eigenvector": [v.detach().clone() for v in top_eigenvector],
-        "bottom_eigenvalue": bottom_eigenvalue,
-        "bottom_eigenvector": [v.detach().clone() for v in bottom_eigenvector],
+        "top_eigenvalue":   max_eigenvalue,
+        "top_eigenvector":  max_eigenvector,   # liste de tenseurs
+        "top5_eigenvalue":  min_eigenvalue,
+        "top5_eigenvector": min_eigenvector,    # liste de tenseurs
+        "all_eigenvalues":  top_vals,
+        "hessian_comp":     hessian_comp,
     }
 
 hessian_results = compute_top_and_bottom_hessian_eigenpairs(
@@ -464,10 +441,26 @@ hessian_results = compute_top_and_bottom_hessian_eigenpairs(
 )
 
 print(f"-> Top Eigenvalue (Max courbure) : {hessian_results['top_eigenvalue']:.4f}")
-print(f"-> Bottom Eigenvalue (Min courbure) : {hessian_results['bottom_eigenvalue']:.4f}")
+print(f"-> 5th Eigenvalue (Min courbure) : {hessian_results['top5_eigenvalue']:.4f}")
 
 raw_dir_x = hessian_results['top_eigenvector']
-raw_dir_y = hessian_results['bottom_eigenvector']
+raw_dir_y = hessian_results['top5_eigenvector']
+hessian_comp = hessian_results['hessian_comp']
+
+# Vérifie que dir_x est bien un eigenvector : H @ dir_x ≈ lambda * dir_x
+# Top eigenvector
+# hv_result = hessian_comp.dataloader_hv_product(raw_dir_x)
+# _, hv = hv_result
+# hv_norm = sum(v.norm().item() for v in hv)
+# dx_norm = sum(v.norm().item() for v in raw_dir_x)
+# print(f"Top   — Ratio ||Hv||/||v|| = {hv_norm/dx_norm:.4f}  (doit ≈ {hessian_results['top_eigenvalue']:.4f})")
+
+# # Bottom eigenvector
+# hv_result = hessian_comp.dataloader_hv_product(raw_dir_y)
+# _, hv = hv_result
+# hv_norm = sum(v.norm().item() for v in hv)
+# dy_norm = sum(v.norm().item() for v in raw_dir_y)
+# print(f"Bottom — Ratio ||Hv||/||v|| = {hv_norm/dy_norm:.4f}  (doit ≈ {hessian_results['bottom_eigenvalue']:.4f})")
 
 def normalize_direction_filter_wise(direction_vectors, model_parameters):
     """Applique la normalisation par filtre sur les vecteurs propres pour préserver l'échelle."""
@@ -484,9 +477,9 @@ def normalize_direction_filter_wise(direction_vectors, model_parameters):
         normalized_direction.append(d_clone)
     return normalized_direction
 
-print("Normalisation filter-wise des vecteurs propres...")
-dir_x = normalize_direction_filter_wise(raw_dir_x, model.parameters())
-dir_y = normalize_direction_filter_wise(raw_dir_y, model.parameters())
+#print("Normalisation filter-wise des vecteurs propres...")
+dir_x = raw_dir_x#normalize_direction_filter_wise(raw_dir_x, model.parameters())
+dir_y = raw_dir_y#normalize_direction_filter_wise(raw_dir_y, model.parameters())
 
 # ==========================================
 # 4. FONCTION D'ÉVALUATION DE LA LOSS
@@ -526,8 +519,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.01, 0.01, grid_resolution)
-steps_y = np.linspace(-0.01, 0.01, grid_resolution)
+steps_x = np.linspace(-0.5, 0.5, grid_resolution)
+steps_y = np.linspace(-0.5, 0.5, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
@@ -623,4 +616,4 @@ fig.update_layout(
 )
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
-fig.write_html("loss_landscape_interactif.html")
+fig.write_html(f"{model_name}.html")
