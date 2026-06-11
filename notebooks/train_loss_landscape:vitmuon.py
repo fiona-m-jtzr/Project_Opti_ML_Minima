@@ -519,8 +519,8 @@ def evaluate_loss_subsampled(model, loader, criterion, device, num_batches=32):
 # ==========================================
 # Résolution de la grille (ex: 11x11 ou 21x21). Plus c'est grand, plus c'est précis mais long.
 grid_resolution = 15
-steps_x = np.linspace(-0.5, 0.5, grid_resolution)
-steps_y = np.linspace(-0.5, 0.5, grid_resolution)
+steps_x = np.linspace(-0.01, 0.01, grid_resolution)
+steps_y = np.linspace(-0.01, 0.01, grid_resolution)
 
 X, Y = np.meshgrid(steps_x, steps_y)
 Z = np.zeros_like(X)
@@ -591,7 +591,7 @@ ax2.view_init(elev=30, azim=45)
 # save_path = os.path.join(output_dir, "resnet20_loss_landscape.png")
 
 plt.tight_layout()
-plt.savefig(f"loss_landscape_vit/{model_name}_best.png", dpi=300, bbox_inches='tight') # bbox_inches évite que les axes soient coupés
+plt.savefig(f"loss_landscape_vit/{model_name}_zoomed.png", dpi=300, bbox_inches='tight') # bbox_inches évite que les axes soient coupés
 
 # 1. Charger les matrices calculées sur le cluster
 # data_dir = './results'
@@ -616,4 +616,4 @@ fig.update_layout(
 )
 
 # 4. Afficher (ou sauvegarder en fichier HTML indépendant que vous pouvez ouvrir partout)
-fig.write_html(f"{model_name}.html")
+fig.write_html(f"{model_name}_zoomed.html")
