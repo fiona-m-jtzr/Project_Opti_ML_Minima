@@ -323,21 +323,11 @@ _EPFL_SHARPNESS_MODULE = None
 
 
 def _load_epfl_sharpness_module():
-    """
-    Load the original EPFL sharpness.py implementation.
-
-    Expected layout next to this analyzer:
-        sharpness_vs_generalization/sharpness.py
-        sharpness_vs_generalization/utils.py
-
-    These files should be copied verbatim from:
-        https://github.com/tml-epfl/sharpness-vs-generalization
-    """
     global _EPFL_SHARPNESS_MODULE
     if _EPFL_SHARPNESS_MODULE is not None:
         return _EPFL_SHARPNESS_MODULE
 
-    repo_dir = Path(__file__).resolve().parent / "sharpness_vs_generalization"
+    repo_dir = Path(__file__).resolve().parent / "adaptive_sharpness"
     sharpness_py = repo_dir / "sharpness.py"
     utils_py = repo_dir / "utils.py"
 
