@@ -11,8 +11,6 @@ from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
 from torch.utils.data import random_split
-import numpy as np
-from scipy.sparse.linalg import LinearOperator
 
 
 # MODEL DEFINITION
@@ -207,7 +205,6 @@ def get_hessian_batch_tensor(loader, device, num_batches=32):
         ys.append(y)
     return torch.cat(xs, dim=0).to(device), torch.cat(ys, dim=0).to(device)
 
-
 def compute_top_and_bottom_hessian_eigenpairs(
     model,
     loader,
@@ -279,7 +276,6 @@ raw_dir_x = hessian_results['top_eigenvector']
 raw_dir_y = hessian_results['top5_eigenvector']
 hessian_comp = hessian_results['hessian_comp']
 
-
 def normalize_direction_filter_wise(direction_vectors, model_parameters):
     """Applique la normalisation par filtre sur les vecteurs propres pour préserver l'échelle."""
     normalized_direction = []
@@ -339,8 +335,6 @@ for i, x_coeff in enumerate(steps_x):
         Z[j, i] = loss_val # Attention à l'indexation (y=lignes, x=colonnes)
 
     print(f"Row {i+1}/{grid_resolution} done.")
-
-# Restaurer les poids d'origine du modèle
 for p, w_start in zip(model.parameters(), target_weights):
     p.data = w_start
 
@@ -353,10 +347,9 @@ fig = plt.figure(figsize=(14, 6))
 ax1 = fig.add_subplot(1, 2, 1)
 contour = ax1.contourf(X, Y, Z, levels=30, cmap='viridis')
 fig.colorbar(contour, ax=ax1, label='Loss')
-ax1.scatter(0, 0, color='red', marker='*', s=150, label='Minimum trouvé')
-ax1.set_title('Loss Landscape 2D (Contours)')
-ax1.set_xlabel('Direction X')
-ax1.set_ylabel('Direction Y')
+ax1.scatter(0, 0, color='red', marker='*', s=150) 
+ax1.set_xlabel('1st eigenvector')
+ax1.set_ylabel('5th eigenvector')
 ax1.legend()
 
 ax2 = fig.add_subplot(1, 2, 2, projection='3d')
@@ -366,9 +359,8 @@ fig.colorbar(surf, ax=ax2, shrink=0.5, aspect=5, label='Loss')
 min_loss = Z[grid_resolution//2, grid_resolution//2]
 ax2.scatter(0, 0, min_loss, color='red', marker='*', s=150, zorder=10)
 
-ax2.set_title('Loss Landscape 3D')
-ax2.set_xlabel('Direction X')
-ax2.set_ylabel('Direction Y')
+ax2.set_xlabel('1st egenvector')
+ax2.set_ylabel('5th eigenvector')
 ax2.set_zlabel('Loss')
 
 ax2.view_init(elev=30, azim=45)
