@@ -6,6 +6,8 @@ This repository contains the code and configuration files used to analyze and co
 
 We perform our experiment on the CIFAR10 dataset and use ResNet20 and a simple ViT as model architectures.
 
+The training, analysis and visualization scripts can be run independently and interface through W&B artifacts, in which model weights and analysis results are stored.
+
 ## Project Overview
 The file RUN.py provides the training loop, which reproduces our results if launched with the hyperparameter configurations provided in the files located in the folder sweeps. The training has been performed on the EPFL RCP Cluster. Results and models are logged to Weights & Biases (W&B).
 
@@ -54,7 +56,7 @@ The generated analysis report contains performance metrics, gradient statistics,
 
 ## Installation & Setup
 
-All the necessary python installations are listed in the requirements.txt file. If "cuda" is available, the code will run on GPU (recommended), otherwise it will run on CPU.
+All the necessary python installations are listed in the requirements.txt file. If "cuda" is available, the code will run on GPU (recommended), otherwise it will run on CPU. Furthermore, it is required that the user is logged in to W&B. The W&B project name is hardcoded as "OptiML_Minima".
 
 ## AI Disclaimer
 
