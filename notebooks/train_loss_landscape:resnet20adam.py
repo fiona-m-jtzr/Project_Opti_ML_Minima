@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
-from hessian.hessian import hessian
+# from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
 from torch.utils.data import DataLoader, random_split
@@ -143,7 +143,11 @@ artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
 ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))
 grad_min = list(filter(lambda k: 'min_grad' in k.name, ckpt_path))[0]
-print('path: ',ckpt_path)
+ckpt_best = torch.load(list(filter(lambda k: 'best' in k.name, ckpt_path))[0], map_location=device)
+ckpt_grad = torch.load(list(filter(lambda k: 'min_grad' in k.name, ckpt_path))[0], map_location=device)
+
+print("best.pt keys:", list(ckpt_best['model'].keys())[:5])
+print("min_grad.pt keys:", list(ckpt_grad['model'].keys())[:5])
 model = ResNet20().to(device)
 checkpoint = torch.load(grad_min, map_location=device)
 
