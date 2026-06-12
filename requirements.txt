@@ -18,3 +18,5 @@ ipykernel
 
 # Vizualisation
 plotly
+wandb
+typing_extensions>=4.8.0
