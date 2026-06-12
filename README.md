@@ -17,3 +17,5 @@ The file RUN.py provides the training loop, which reproduces our results if laun
 ---
 
 ## Installation & Setup
+
+All the necessary python installations ar listed in the requirements.txt file.
