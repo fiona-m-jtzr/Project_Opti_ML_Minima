@@ -58,4 +58,4 @@ All the necessary python installations ar listed in the requirements.txt file.
 
 ## AI Disclaimer
 
-Different LLMs (Claude, Gemini and ChatGPT) have been used to produce the code contained in this repository.
+Different LLMs (Claude, Gemini and ChatGPT) have been used in the production of the code contained in this repository.
