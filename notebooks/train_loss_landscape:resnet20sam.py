@@ -139,7 +139,7 @@ criterion = nn.CrossEntropyLoss()
 # ==========================================
 # Assurez-vous que la classe ResNet20 et BasicBlock sont définies plus haut dans votre script
 api = wandb.Api()
-model_name = 'model-FINAL_MODEL_vit_sam_rho0.05_baseadam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1'
+model_name = 'model-FINAL_MODEL_resnet20_sam_rho0.05_basesgd_lr0.1_wd0.0_bs128_cosine_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
 ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))

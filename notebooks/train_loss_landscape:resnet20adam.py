@@ -21,12 +21,6 @@ import plotly.graph_objects as go
 from torch.utils.data import DataLoader, random_split
 import torch.nn.functional as F
 
-"""
-Vision Transformer (ViT) for CIFAR-10.
-Minimal implementation — no dropout, no stochastic depth, no presets.
-"""
-
-
 class BasicBlock(nn.Module):
     """Standard residual block with two 3×3 convolutions."""
 
@@ -144,7 +138,7 @@ criterion = nn.CrossEntropyLoss()
 # ==========================================
 # Assurez-vous que la classe ResNet20 et BasicBlock sont définies plus haut dans votre script
 api = wandb.Api()
-model_name = 'model-FINAL_MODEL_vit_adam_lr0.0005_wd0.0_bs256_cosine_warmup_seed1'
+model_name = 'model-FINAL_MODEL_resnet20_adam_lr0.001_wd0.0_bs128_cosine_seed1'
 artifact = api.artifact(f"fiona-jetzer-epfl/OptiML_Minima/{model_name}:v0")
 artifact_dir = Path(artifact.download())
 ckpt_path = (list(artifact_dir.rglob("*.pt")) + list(artifact_dir.rglob("*.pth")))

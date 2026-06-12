@@ -19,18 +19,6 @@ from hessian.hessian import hessian
 from itertools import islice
 import plotly.graph_objects as go
 from torch.utils.data import DataLoader, random_split
-import os
-
-"""
-Vision Transformer (ViT) for CIFAR-10.
-Minimal implementation — no dropout, no stochastic depth, no presets.
-"""
-
-import torch
-import torch.nn as nn
-
-
-import torch.nn as nn
 import torch.nn.functional as F
 
 class BasicBlock(nn.Module):
