@@ -248,7 +248,7 @@ def compute_top_and_bottom_hessian_eigenpairs(
         model,
         criterion,
         dataloader=subset_loader,
-        cuda=(device == "cuda"),
+        cuda=True,
     )
 
     top_vals, top_vecs = hessian_comp.eigenvalues(top_n=5)
