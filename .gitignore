@@ -5,6 +5,7 @@
 __pycache__
 minimum_analysis.json
 runai_commands.txt
+archive/
 
 # IMPORTANT: .env file contains secrets
 .env
