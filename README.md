@@ -54,7 +54,7 @@ The generated analysis report contains performance metrics, gradient statistics,
 
 ## Installation & Setup
 
-All the necessary python installations ar listed in the requirements.txt file.
+All the necessary python installations are listed in the requirements.txt file. If "cuda" is available, the code will run on GPU (recommended), otherwise it will run on CPU.
 
 ## AI Disclaimer
 
