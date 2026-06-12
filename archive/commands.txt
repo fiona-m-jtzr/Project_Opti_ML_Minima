@@ -1,0 +1,4 @@
+python csub.py -n dev-gpu -g1
+pip install --upgrade typing_extensions wandb
+pip install plotly
+python -m notebooks.train_loss_landscape:vitsgdbs256
