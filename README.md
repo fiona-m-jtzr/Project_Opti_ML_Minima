@@ -53,6 +53,17 @@ python analyzer.py \
 
 The generated analysis report contains performance metrics, gradient statistics, Hessian eigenvalue and trace estimates, sampled sharpness curves, adaptive sharpness measurements, and metadata describing the analyzed checkpoint.
 
+##@ Loss Landscape Visualization
+The loss landscape is visualized around a trained minimum W* by perturbing the model weights along two directions derived from the Hessian: the eigenvectors corresponding to the 1st and 5th largest eigenvalues. For each point (α, β) on a 2D grid, weights are set to W* + α·v1 + β·v2 and the loss is evaluated on a fixed subset of the training data. The resulting surface is rendered both as a static 2D contour + 3D surface plot (matplotlib) and as an interactive 3D visualization (Plotly).
+## Usage
+```bash
+python -m notebooks.train_loss_landscape:vitadam
+```
+or 
+```bash
+python -m notebooks.train_loss_landscape:vitmuon
+```
+To visualize the loss landscape of a different model, update the `model_name` variable with the corresponding W&B artifact path.
 
 ## Installation & Setup
 
