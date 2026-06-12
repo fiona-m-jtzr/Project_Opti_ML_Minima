@@ -7,7 +7,7 @@ This repository contains the code and configuration files used to analyze and co
 We perform our experiment on the CIFAR10 dataset and use ResNet20 and a simple ViT as model architectures.
 
 ## Project Overview
-The file RUN.py provides the training loop, which reproduces our results if launched with the hyperparameter configurations provided in the files located in the folder sweeps. 
+The file RUN.py provides the training loop, which reproduces our results if launched with the hyperparameter configurations provided in the files located in the folder sweeps. The training has been performed on the EPFL RCP Cluster.
 
 ### Optimizer Implementations
 - **SGD & Adam:** Standard `torch.optim` implementations.
