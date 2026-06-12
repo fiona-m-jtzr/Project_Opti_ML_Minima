@@ -636,7 +636,7 @@ def elementwise_adaptive_sharpness_curve(
     x, y = next(iter(loader))
     return x.to(device), y.to(device)"""
 
-def get_hessian_batch_tensor(loader, device, num_batches=32):
+def get_hessian_batch_tensor(loader, device, num_batches=8):
     xs, ys = [], []
     for x, y in islice(loader, num_batches):
         xs.append(x)
