@@ -141,14 +141,11 @@ def build_optimizer(model, args):
                    adaptive=args.adaptive_sam, **base_kwargs
         )
     elif opt == "muon":
-        # For ViT: exclude embedding layers, norms, biases, and cls/pos tokens
-        # For ResNet: exclude BN layers and biases
         def is_muon_param(name, p):
             if p.ndim < 2:
                 return False
-            # Always exclude these regardless of model
-            exclude_keywords = ["bias", "bn", "norm",        # norms & biases
-                                 "cls_token", "pos_embed",    # ViT special tokens
+            exclude_keywords = ["bias", "bn", "norm",       
+                                 "cls_token", "pos_embed",    
                                  "patch_embed.proj", "head"]                    
             return not any(kw in name for kw in exclude_keywords)
 
@@ -165,7 +162,6 @@ def build_optimizer(model, args):
                 weight_decay=args.weight_decay, use_muon=False),
         ]
 
-        # Temporary Debug Check inside build_optimizer()
         print("\n--- OPTIMIZER PARAMETER ASSIGNMENT VERIFICATION ---")
         print("Going to MUON:")
         for name, p in model.named_parameters():
@@ -372,12 +368,7 @@ def main():
         elif args.optimizer == "sgd":
             extras = f"_mom{args.momentum}" + ("_nesterov" if args.nesterov else "")
         elif args.optimizer == "muon":
-            # Captures both distinct learning rate tracks explicitly
             extras = f"_muonLR{args.lr}_adamLR{args.lr_muon_adam}"
-        
-        # Build the final string seamlessly
-        # Note: We removed the duplicate '_lr{args.lr}' from the template below 
-        # when running Muon to prevent naming clutter.
         lr_string = "" if args.optimizer == "muon" else f"_lr{args.lr}"
         
         args.run_name = (
