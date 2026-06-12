@@ -19,3 +19,7 @@ The file RUN.py provides the training loop, which reproduces our results if laun
 ## Installation & Setup
 
 All the necessary python installations ar listed in the requirements.txt file.
+
+## AI Disclaimer
+
+Different LLMs (Claude, Gemini and ChatGPT) have been used to produce the code contained in this repository.
